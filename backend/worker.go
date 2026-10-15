@@ -323,7 +323,7 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 		p["stage"] = stage
 		p["checkpoint"] = cp
 		if len(cp.Blocked) > blockedBefore {
-			logs += fmt.Sprintf("\nIncomplete host coverage: %v", cp.Blocked[blockedBefore:])
+			logs += fmt.Sprintf("\nIncomplete host coverage: %v", dedupeStrings(cp.Blocked[blockedBefore:]))
 		}
 		p["log"] = logs
 		p["status"] = "completed"
@@ -1004,4 +1004,16 @@ func scannerProxy(ctx context.Context, raw string, lookup func(context.Context, 
 	}
 	u.Host = net.JoinHostPort(selected.String(), port)
 	return u, nil
+}
+
+func dedupeStrings(items []string) []string {
+	seen := make(map[string]bool, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if !seen[item] {
+			seen[item] = true
+			out = append(out, item)
+		}
+	}
+	return out
 }

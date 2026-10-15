@@ -17,3 +17,46 @@ DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='audit_append_on
 INSERT INTO schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_migrations(version) VALUES(2) ON CONFLICT DO NOTHING;
+
+CREATE OR REPLACE VIEW v_scans AS
+SELECT
+    id,
+    workspace_id,
+    target_id,
+    data->>'domain' AS domain,
+    data->>'status' AS status,
+    data->>'error' AS error,
+    data->>'startedAt' AS created_at,
+    data->>'startedAt' AS started_at,
+    data->>'finishedAt' AS finished_at,
+    (data->>'progress')::int AS progress,
+    data
+FROM scans;
+
+CREATE OR REPLACE VIEW v_audit_log AS
+SELECT
+    id,
+    workspace_id,
+    data->>'at' AS created_at,
+    data->>'actor' AS actor,
+    data->>'kind' AS action,
+    data->>'title' AS summary,
+    data->>'detail' AS detail,
+    data
+FROM audit_log;
+
+CREATE OR REPLACE VIEW v_scan_stages AS
+SELECT
+    s.id AS scan_id,
+    s.workspace_id,
+    s.target_id,
+    s.data->>'domain' AS domain,
+    stage->>'name' AS stage_name,
+    stage->>'status' AS stage_status,
+    stage->>'tool' AS tool,
+    stage->>'log' AS log,
+    (stage->>'attempts')::int AS attempts
+FROM scans s,
+LATERAL jsonb_array_elements(s.data->'stages') AS stage;
+
+INSERT INTO schema_migrations(version) VALUES(3) ON CONFLICT DO NOTHING;

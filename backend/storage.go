@@ -330,7 +330,7 @@ func runMigrations() {
 	if _, err = tx.Exec(ctx, schemaSQL); err != nil {
 		panic(err)
 	}
-	if _, err = tx.Exec(ctx, `GRANT USAGE ON SCHEMA public TO surfacer_app; REVOKE CREATE ON SCHEMA public FROM PUBLIC; GRANT SELECT,INSERT,UPDATE ON workspace_settings,workspace_runtime,targets,scans,assets,findings,historical_endpoints TO surfacer_app; GRANT SELECT,INSERT ON audit_log,change_events TO surfacer_app; GRANT SELECT ON schema_migrations TO surfacer_app;`); err != nil {
+	if _, err = tx.Exec(ctx, `GRANT USAGE ON SCHEMA public TO surfacer_app; REVOKE CREATE ON SCHEMA public FROM PUBLIC; GRANT SELECT,INSERT,UPDATE ON workspace_settings,workspace_runtime,targets,scans,assets,findings,historical_endpoints TO surfacer_app; GRANT SELECT,INSERT ON audit_log,change_events TO surfacer_app; GRANT SELECT ON schema_migrations,v_scans,v_audit_log,v_scan_stages TO surfacer_app;`); err != nil {
 		panic(err)
 	}
 	if err = tx.Commit(ctx); err != nil {
