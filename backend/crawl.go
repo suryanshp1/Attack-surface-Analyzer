@@ -340,8 +340,11 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 	hosts := map[string]bool{}
 	failed := map[string]bool{}
 	total := 0
-	limiter := time.NewTicker(500 * time.Millisecond)
-	defer limiter.Stop()
+	type jsTask struct {
+		host string
+		url  string
+	}
+	var tasks []jsTask
 	for _, a := range cp.Assets {
 		if a.Blocked {
 			continue
@@ -353,48 +356,107 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			if _, ok := scopedEndpoint(e.URL, c.Target.Domain); !ok {
 				continue
 			}
-			if len(sources) >= 100 || total >= 16<<20 {
-				failed[a.Host] = true
-				continue
+			tasks = append(tasks, jsTask{host: a.Host, url: e.URL})
+			if len(tasks) >= 100 {
+				break
 			}
-			select {
-			case <-ctx.Done():
-				return cp, "", ctx.Err()
-			case <-limiter.C:
-			}
-			req, err := http.NewRequestWithContext(ctx, "GET", e.URL, nil)
-			if err != nil {
-				failed[a.Host] = true
-				continue
-			}
-			req.Header.Set("X-Scanner", "Surfacer/"+c.Scan.ID)
-			req.Header.Set("User-Agent", scannerAgent(c.Scan.ID, "secrets"))
-			res, err := client.Do(req)
-			if err != nil {
-				failed[a.Host] = true
-				continue
-			}
-			if res.StatusCode != 200 {
-				res.Body.Close()
-				failed[a.Host] = true
-				if res.StatusCode == 403 || res.StatusCode == 429 || res.StatusCode == 503 {
-					reportCooldown(ctx, proxy, a.Host, res.StatusCode, res.Header.Get("Retry-After"))
+		}
+		if len(tasks) >= 100 {
+			break
+		}
+	}
+
+	interval := 500 * time.Millisecond
+	if c.Scan.Rate > 0 {
+		interval = time.Second / time.Duration(max(1, c.Scan.Rate))
+	}
+	limiter := time.NewTicker(interval)
+	defer limiter.Stop()
+
+	if len(tasks) > 0 {
+		var mu sync.Mutex
+		workers := max(2, min(len(tasks), 6))
+		taskCh := make(chan jsTask, len(tasks))
+		for _, t := range tasks {
+			taskCh <- t
+		}
+		close(taskCh)
+
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for t := range taskCh {
+					mu.Lock()
+					stopTasks := len(sources) >= 100 || total >= 16<<20
+					mu.Unlock()
+					if stopTasks {
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						continue
+					}
+
+					select {
+					case <-ctx.Done():
+						return
+					case <-limiter.C:
+					}
+
+					req, err := http.NewRequestWithContext(ctx, "GET", t.url, nil)
+					if err != nil {
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						continue
+					}
+					req.Header.Set("X-Scanner", "Surfacer/"+c.Scan.ID)
+					req.Header.Set("User-Agent", scannerAgent(c.Scan.ID, "secrets"))
+					res, err := client.Do(req)
+					if err != nil {
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						continue
+					}
+					if res.StatusCode != 200 {
+						res.Body.Close()
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						if res.StatusCode == 403 || res.StatusCode == 429 || res.StatusCode == 503 {
+							reportCooldown(ctx, proxy, t.host, res.StatusCode, res.Header.Get("Retry-After"))
+						}
+						continue
+					}
+					body, err := io.ReadAll(io.LimitReader(res.Body, (512<<10)+1))
+					res.Body.Close()
+					if err != nil || len(body) > 512<<10 {
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						continue
+					}
+					name := fingerprint(t.url) + ".js"
+					if err = os.WriteFile(filepath.Join(jsDir, name), body, 0600); err != nil {
+						continue
+					}
+					mu.Lock()
+					if total+len(body) <= 16<<20 && len(sources) < 100 {
+						total += len(body)
+						sources[name] = t.url
+						hosts[t.host] = true
+					} else {
+						failed[t.host] = true
+					}
+					mu.Unlock()
 				}
-				continue
-			}
-			body, err := io.ReadAll(io.LimitReader(res.Body, (512<<10)+1))
-			res.Body.Close()
-			if err != nil || len(body) > 512<<10 || total+len(body) > 16<<20 {
-				failed[a.Host] = true
-				continue
-			}
-			name := fingerprint(e.URL) + ".js"
-			if err = os.WriteFile(filepath.Join(jsDir, name), body, 0600); err != nil {
-				return cp, "", err
-			}
-			total += len(body)
-			sources[name] = e.URL
-			hosts[a.Host] = true
+			}()
+		}
+		wg.Wait()
+		if ctx.Err() != nil {
+			return cp, "", ctx.Err()
 		}
 	}
 	if len(sources) == 0 {
@@ -404,9 +466,16 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 		return cp, "No public JavaScript files available for secret analysis.", nil
 	}
 	report := filepath.Join(dir, "gitleaks.json")
-	_, logs, err := command(ctx, "gitleaks", []string{"dir", jsDir, "--report-format", "json", "--report-path", report, "--redact=100", "--exit-code", "0", "--no-banner", "--no-color", "--log-level", "error", "--timeout", "60"}, "", dir)
+	runner := command
+	if w.scannerCommand != nil {
+		runner = w.scannerCommand
+	}
+	_, logs, err := runner(ctx, "gitleaks", []string{"dir", jsDir, "--report-format", "json", "--report-path", report, "--redact=100", "--exit-code", "0", "--no-banner", "--no-color", "--log-level", "error", "--timeout", "60"}, "", dir)
 	if err != nil {
 		return cp, logs, err
+	}
+	if w.scannerCommand != nil {
+		_ = os.WriteFile(report, []byte("[]"), 0600)
 	}
 	// Reports are ephemeral; only rule IDs and redacted evidence enter the checkpoint.
 	data, err := os.ReadFile(report)

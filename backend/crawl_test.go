@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -172,5 +173,39 @@ func TestConcurrentCrawlSeeds(t *testing.T) {
 	}
 	if len(result.CrawlIncomplete) != 0 {
 		t.Fatalf("expected 0 incomplete seeds, got %d", len(result.CrawlIncomplete))
+	}
+}
+
+func TestParallelJavaScriptDownload(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("console.log('secret=123');"))
+	}))
+	defer ts.Close()
+
+	endpoints := make([]Endpoint, 10)
+	for i := range endpoints {
+		endpoints[i] = Endpoint{
+			Kind: "JavaScript",
+			URL:  fmt.Sprintf("http://owned.example/script%d.js", i),
+		}
+	}
+	cp := Checkpoint{Assets: []Asset{
+		{Host: "owned.example", URL: "http://owned.example", Endpoints: endpoints},
+	}}
+	w := Worker{scannerCommand: func(ctx context.Context, name string, args []string, proxy, dir string) ([]byte, string, error) {
+		return []byte("[]"), "", nil
+	}}
+	claim := Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Rate: 20}}
+	result, log, err := w.analyzeJavaScript(context.Background(), claim, cp, ts.URL, t.TempDir())
+	if err != nil {
+		t.Fatalf("analyzeJavaScript failed: %v", err)
+	}
+	if !strings.Contains(log, "Gitleaks analyzed 10 public JS files") {
+		t.Fatalf("expected 10 public JS files analyzed, got log: %s", log)
+	}
+	if len(result.Blocked) != 0 {
+		t.Fatalf("expected 0 blocked hosts, got: %v", result.Blocked)
 	}
 }
