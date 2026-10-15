@@ -117,6 +117,7 @@ func (g *trafficGovernor) observe(key string, status int, header string) {
 	now := time.Now()
 	slot.touched = now
 	if status == 403 || status == 429 || status == 503 {
+		GlobalTelemetry.RecordRateLimitStrike()
 		slot.strikes = min(slot.strikes+1, 7)
 		delay := time.Duration(1<<slot.strikes) * time.Second
 		if status == 403 && delay < time.Minute {

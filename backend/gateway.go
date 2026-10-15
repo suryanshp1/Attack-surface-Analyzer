@@ -163,7 +163,8 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	providers := map[string]bool{"crt.sh": true, "api.hackertarget.com": true, "rapiddns.io": true, "web.archive.org": true, "index.commoncrawl.org": true, "data.commoncrawl.org": true}
 	if !inScope(host, permit.Root) && !providers[host] {
-		log.Printf("blocked out-of-scope destination %q", host)
+		GlobalTelemetry.RecordBlockedEgress()
+		Log(r.Context()).Warn("gateway_blocked_destination", "host", host, "reason", "out_of_scope")
 		http.Error(w, "Destination outside verified scope", 403)
 		return
 	}
@@ -203,10 +204,12 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "CONNECT" {
 		upstream, err := g.safeDial(r.Context(), "tcp", net.JoinHostPort(host, port))
 		if err != nil {
-			log.Printf("blocked dial: %v", err)
+			GlobalTelemetry.RecordBlockedEgress()
+			Log(r.Context()).Warn("gateway_blocked_dial", "host", host, "port", port, "err", err.Error())
 			http.Error(w, "Destination blocked or unavailable", 502)
 			return
 		}
+		GlobalTelemetry.RecordEgress()
 		h, ok := w.(http.Hijacker)
 		if !ok {
 			upstream.Close()

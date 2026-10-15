@@ -249,7 +249,79 @@ func validDomain(d string) bool {
 	}
 	return true
 }
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += int64(n)
+	return n, err
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+func (s *Server) observabilityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = id()
+		}
+		w.Header().Set("X-Request-ID", reqID)
+		ctx := WithRequestID(r.Context(), reqID)
+		r = r.WithContext(ctx)
+
+		GlobalTelemetry.IncInflight()
+		defer GlobalTelemetry.DecInflight()
+
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+
+		dur := time.Since(start)
+		GlobalTelemetry.RecordRequest(r.Method, r.URL.Path, rec.status, dur)
+
+		if r.URL.Path != "/health" {
+			Log(ctx).Info("http_request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rec.status,
+				"duration_ms", dur.Milliseconds(),
+				"bytes", rec.bytes,
+			)
+		}
+	})
+}
+
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	if reqID == "" {
+		reqID = r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = id()
+		}
+		r = r.WithContext(WithRequestID(r.Context(), reqID))
+	}
+	w.Header().Set("X-Request-ID", reqID)
 	if r.URL.Path == "/health" {
 		respond(w, 200, map[string]string{"status": "ok"})
 		return
@@ -795,6 +867,7 @@ func main() {
 		runGateway()
 		return
 	}
+	InitLogger()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	file := os.Getenv("DATA_FILE")
@@ -868,7 +941,7 @@ func main() {
 			}
 		}
 	}()
-	srv := &http.Server{Addr: addr, Handler: http.HandlerFunc(s.handle), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: s.observabilityMiddleware(http.HandlerFunc(s.handle)), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()

@@ -248,6 +248,7 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 		stageCtx, stop := context.WithTimeout(ctx, stageBudget)
 		blockedBefore := len(cp.Blocked)
 		logs := ""
+		stageStart := time.Now()
 		switch sc.Stages[stage].Name {
 		case "Discovery":
 			cp, logs, err = w.discover(stageCtx, claim, cp, proxyURL, workdir)
@@ -276,6 +277,13 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			logs = "Lifecycle changes will be committed atomically with the completed scan."
 		default:
 			err = fmt.Errorf("unsupported scan stage: %s", sc.Stages[stage].Name)
+		}
+		stageDur := time.Since(stageStart)
+		GlobalTelemetry.RecordStageDuration(sc.Stages[stage].Name, stageDur)
+		if err != nil {
+			Log(ctx).Error("worker_stage_failed", "scan_id", sc.ID, "stage", sc.Stages[stage].Name, "duration_ms", stageDur.Milliseconds(), "err", err.Error())
+		} else {
+			Log(ctx).Info("worker_stage_completed", "scan_id", sc.ID, "stage", sc.Stages[stage].Name, "duration_ms", stageDur.Milliseconds())
 		}
 		stop()
 		if parent.Err() != nil {

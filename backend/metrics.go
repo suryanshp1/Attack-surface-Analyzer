@@ -37,5 +37,17 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request, actor Actor) {
 		}
 		fmt.Fprintf(w, "surfacer_open_findings{severity=%s} %d\n", strconv.Quote(severity), n)
 	}
+
+	// Database connection pool stats if live PostgreSQL backend is active
+	if s.db != nil {
+		stat := s.db.Stat()
+		fmt.Fprintf(w, "# TYPE surfacer_db_pool_total_connections gauge\nsurfacer_db_pool_total_connections %d\n", stat.TotalConns())
+		fmt.Fprintf(w, "# TYPE surfacer_db_pool_idle_connections gauge\nsurfacer_db_pool_idle_connections %d\n", stat.IdleConns())
+		fmt.Fprintf(w, "# TYPE surfacer_db_pool_acquired_connections gauge\nsurfacer_db_pool_acquired_connections %d\n", stat.AcquiredConns())
+	}
+
+	// Append operational telemetry (RED metrics, gateway counters, stage durations, runtime)
+	GlobalTelemetry.WritePrometheus(w)
+
 	fmt.Fprintf(w, "surfacer_metrics_timestamp_seconds %d\n", time.Now().Unix())
 }

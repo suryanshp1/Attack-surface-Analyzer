@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, randomUUID } from "node:crypto";
 export const dynamic = "force-dynamic";
 function equal(a: string, b: string) {
   return (
@@ -12,16 +12,20 @@ async function proxy(
   context: { params: Promise<{ path: string[] }> },
 ) {
   const { path } = await context.params;
+  const requestId = request.headers.get("x-request-id") || randomUUID();
   if (request.method !== "GET") {
     const origin = request.headers.get("origin");
     try {
       if (origin && new URL(origin).host !== request.headers.get("host"))
         return Response.json(
           { error: "Cross-origin writes are not allowed" },
-          { status: 403 },
+          { status: 403, headers: { "X-Request-ID": requestId } },
         );
     } catch {
-      return Response.json({ error: "Invalid origin" }, { status: 403 });
+      return Response.json(
+        { error: "Invalid origin" },
+        { status: 403, headers: { "X-Request-ID": requestId } },
+      );
     }
   }
   const workspaceToken = process.env.WORKSPACE_TOKEN;
@@ -29,8 +33,8 @@ async function proxy(
   const bearer = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
   const owner = workspaceToken && equal(session,workspaceToken);
   const userKey = /^surf_key_[a-f0-9]{64}$/.test(bearer) ? bearer : /^surf_key_[a-f0-9]{64}$/.test(session) ? session : "";
-  if (workspaceToken && !owner && !userKey) return Response.json({error:"Sign in to your workspace",auth:true},{status:401});
-  const headers: Record<string,string> = {"Content-Type":"application/json"};
+  if (workspaceToken && !owner && !userKey) return Response.json({error:"Sign in to your workspace",auth:true},{status:401, headers: { "X-Request-ID": requestId }});
+  const headers: Record<string,string> = {"Content-Type":"application/json", "X-Request-ID": requestId};
   const apiToken=owner || !workspaceToken ? process.env.API_TOKEN : userKey;
   if(apiToken)headers.Authorization=`Bearer ${apiToken}`;
   let body: string | undefined;
@@ -64,6 +68,7 @@ async function proxy(
         signal: request.signal,
       },
     );
+    const returnedReqId = response.headers.get("X-Request-ID") || requestId;
     return new Response(response.body, {
       status: response.status,
       headers: {
@@ -72,15 +77,17 @@ async function proxy(
         "Cache-Control": "no-store",
         ...(response.headers.get("Content-Disposition") ? {"Content-Disposition":response.headers.get("Content-Disposition")!} : {}),
         "X-Accel-Buffering": "no",
+        "X-Request-ID": returnedReqId,
       },
     });
-  } catch {
+  } catch (err) {
+    console.error(`[proxy] Error forwarding ${request.method} /api/${path.join("/")} [req_id: ${requestId}]:`, err);
     return Response.json(
       {
         error:
           "The Go API is unavailable. Start the full app with npm run dev.",
       },
-      { status: 503 },
+      { status: 503, headers: { "X-Request-ID": requestId } },
     );
   }
 }
