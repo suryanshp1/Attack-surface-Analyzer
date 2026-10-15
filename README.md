@@ -2,6 +2,43 @@
 
 A domain-scoped external attack surface application built from `PRD.md` and `design.md`: Next.js 16 / Tailwind v4 frontend, Go API and worker, PostgreSQL, S3-compatible evidence storage, and real ProjectDiscovery scanners.
 
+## Live app preview
+
+Captured from the running local app on 15 October 2026, using existing scan observations. Counts and assessment outcomes reflect that capture; new workspaces start empty.
+
+| Dark appearance | Light appearance |
+| --- | --- |
+| ![Live Surfacer overview in dark mode](docs/media/overview-dark.jpg) | ![Live Surfacer overview in light mode](docs/media/overview-light.jpg) |
+
+### Video walkthrough
+
+The 41-second walkthrough covers the overview, asset inventory, service and TLS evidence, findings, scan activity, and switching to light mode. Click the animated preview to open the full-resolution video.
+
+[![Live Surfacer walkthrough preview](docs/media/surfacer-walkthrough.gif)](docs/media/surfacer-walkthrough.mp4)
+
+[Watch or download the MP4 walkthrough](docs/media/surfacer-walkthrough.mp4) · 1440 × 1000 · no audio
+
+<details>
+<summary>More screenshots: inventory, evidence, findings, and scan activity</summary>
+
+**Asset inventory**
+
+![Live asset inventory with technology, ports, responses, and findings](docs/media/inventory.jpg)
+
+**Asset evidence**
+
+![Asset details with observed service and TLS certificate evidence](docs/media/asset-details.jpg)
+
+**Findings**
+
+![Live findings with severity and lifecycle status](docs/media/findings.jpg)
+
+**Scan activity**
+
+![Scan activity showing scanner stages, coverage, and partial outcomes](docs/media/scan-activity.jpg)
+
+</details>
+
 ## Start the complete stack
 
 Requires Docker Engine with Compose and Node 22+ for credential setup.
