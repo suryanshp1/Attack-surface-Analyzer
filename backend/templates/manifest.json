@@ -1,0 +1,94 @@
+{
+  "version": "v10.5.0",
+  "templates": [
+    {
+      "file": "git-config.yaml",
+      "sha256": "bd8bdfa0b5ed5bf4d3712edb793adfd0987d9282e51c6f7d673bf14b9e4dd524",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/configs/git-config.yaml",
+      "technology": ""
+    },
+    {
+      "file": "apache-server-status.yaml",
+      "sha256": "a0b401b09818e26203a06fdfdffdfd3a5a1af18a7b3ebd72eaaa982adb27f456",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/misconfiguration/apache/apache-server-status.yaml",
+      "technology": "Apache"
+    },
+    {
+      "file": "nginx-status.yaml",
+      "sha256": "931c4e8049b9d94d2a79d9a476f295db87fe5f5b65d760491a5ca2b4cb80b307",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/misconfiguration/nginx/nginx-status.yaml",
+      "technology": "Nginx"
+    },
+    {
+      "file": "laravel-env.yaml",
+      "sha256": "37566f5fb1764be65072836390d4ff3f40af4917ecf00bdb08dbfcf862bb09c7",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/configs/laravel-env.yaml",
+      "technology": ""
+    },
+    {
+      "file": "swagger-api.yaml",
+      "sha256": "cec7f8c8ec22fb44852701c360c960e1c71ee8292f197750a34eb1408ae5a911",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/apis/swagger-api.yaml",
+      "technology": "Swagger"
+    },
+    {
+      "file": "aws-credentials.yaml",
+      "sha256": "c269f281e873a7fad391eb3f1f41b054c99537101ff2efc13dd4937be984b093",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/configs/aws-credentials.yaml",
+      "technology": "",
+      "metadataOnly": true
+    },
+    {
+      "file": "exposed-svn.yaml",
+      "sha256": "4f99844c8a34d0d418b1b56a708199f157c66b94f91dc551ed0fb73556c80192",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/configs/exposed-svn.yaml",
+      "technology": ""
+    },
+    {
+      "file": "phpinfo-files.yaml",
+      "sha256": "8cbe8c980a71099bcaf84f195bf46fef9b24b3b7caa8476f713a4c01ed044a31",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/configs/phpinfo-files.yaml",
+      "technology": "PHP",
+      "metadataOnly": true
+    },
+    {
+      "file": "prometheus-metrics.yaml",
+      "sha256": "4f70d9c846b1b62802686029638504ea4436018f36ee4db5cf307b9ebb4524f4",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/configs/prometheus-metrics.yaml",
+      "technology": ""
+    },
+    {
+      "file": "ds-store-file.yaml",
+      "sha256": "eeaa88a701796f263e8e4c32a5d16ae3e18b2cc97d65338632e4ac8b9e49b7a8",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/files/ds-store-file.yaml",
+      "technology": ""
+    },
+    {
+      "file": "gitlab-ci-yml.yaml",
+      "sha256": "3662e0d10a0a7432cebee3d564e3ac536066c2f31efa85a346aa6d823d9bc024",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/exposures/files/gitlab-ci-yml.yaml",
+      "technology": "",
+      "metadataOnly": true
+    },
+    {
+      "file": "exposed-docker-api.yaml",
+      "sha256": "2c99151d99c1d2d2ac0bac1984a3bc6f99b22ae2ec7728930ffe273c9f13e695",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/misconfiguration/exposed-docker-api.yaml",
+      "technology": "Docker"
+    },
+    {
+      "file": "graphiql-exposure.yaml",
+      "sha256": "624e08d3d4f2545b3e58a77973a7c9c0a63e50573ee69103dc33b19b1b08d4bf",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/misconfiguration/graphql/graphiql-exposure.yaml",
+      "technology": "GraphQL"
+    },
+    {
+      "file": "prometheus-config.yaml",
+      "sha256": "332905b0b31bbbdc5068558347ee820968fd4d3164f62d0687a0dc8fdf1c2ee1",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/misconfiguration/prometheus/prometheus-config.yaml",
+      "technology": "Prometheus",
+      "metadataOnly": true
+    }
+  ],
+  "profile": "v10.5.0-curated-2"
+}

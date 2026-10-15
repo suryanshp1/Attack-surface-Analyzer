@@ -1,0 +1,145 @@
+services:
+  web:
+    build: .
+    ports: ["127.0.0.1:${FRONTEND_PORT:-3000}:3000"]
+    environment:
+      API_URL: http://api:8080
+      API_TOKEN: ${API_TOKEN:?Run node scripts/setup.mjs first}
+      WORKSPACE_TOKEN: ${WORKSPACE_TOKEN:?Run node scripts/setup.mjs first}
+    depends_on:
+      api: { condition: service_healthy }
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    networks: [control]
+    restart: unless-stopped
+  api:
+    build: ./backend
+    environment:
+      LISTEN_ADDR: 0.0.0.0:8080
+      API_TOKEN: ${API_TOKEN}
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      EGRESS_SECRET: ${EGRESS_SECRET}
+      LIVE_SCANNING: "true"
+      REQUIRE_DNS_VERIFICATION: ${REQUIRE_DNS_VERIFICATION:-false}
+      DATABASE_URL: postgres://surfacer_app:${POSTGRES_APP_PASSWORD}@db:5432/surfacer
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: surfacer-evidence
+      EGRESS_PROXY: http://gateway:3128
+      EGRESS_DNS: 172.30.88.3:5353
+    depends_on:
+      db: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "/surfacer", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 512m
+    networks:
+      control:
+      workers: { ipv4_address: 172.30.88.2 }
+    restart: unless-stopped
+  migrate:
+    build: ./backend
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://surfacer:${POSTGRES_PASSWORD}@db:5432/surfacer
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+    depends_on:
+      db: { condition: service_healthy }
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [control]
+    restart: "no"
+  worker:
+    build:
+      { context: ., dockerfile: backend/Dockerfile.worker, target: runtime }
+    environment:
+      WORKER_API_URL: http://api:8080
+      WORKER_TOKEN: ${WORKER_TOKEN}
+    depends_on:
+      api: { condition: service_healthy }
+      gateway: { condition: service_started }
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=256m"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    networks: [workers]
+    restart: unless-stopped
+  gateway:
+    build: ./backend
+    command: ["gateway"]
+    environment:
+      EGRESS_SECRET: ${EGRESS_SECRET}
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      WORKER_API_URL: http://api:8080
+    depends_on:
+      api: { condition: service_healthy }
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 256m
+    networks:
+      workers: { ipv4_address: 172.30.88.3 }
+      egress:
+    restart: unless-stopped
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: surfacer
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: surfacer
+    volumes: ["database:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U surfacer -d surfacer"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    networks: [control]
+    restart: unless-stopped
+  minio:
+    build: { context: ., dockerfile: deploy/Dockerfile.minio }
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    volumes: ["evidence:/data"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    networks: [control]
+    restart: unless-stopped
+volumes:
+  database:
+  evidence:
+networks:
+  control:
+  workers:
+    internal: true
+    ipam:
+      config: [{ subnet: 172.30.88.0/24 }]
+  egress:

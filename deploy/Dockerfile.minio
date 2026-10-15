@@ -1,0 +1,13 @@
+# Build the official patched community source; official community images are no longer available.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+ADD https://github.com/minio/minio/archive/9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a.tar.gz /tmp/source.tar.gz
+RUN tar -xzf /tmp/source.tar.gz -C /src --strip-components=1
+RUN CGO_ENABLED=0 GOMAXPROCS=2 go build -p 2 -trimpath -o /minio .
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates curl && adduser -D -u 10001 storage && mkdir /data && chown storage:storage /data
+COPY --from=build /minio /usr/local/bin/minio
+COPY --from=build /src/LICENSE /usr/share/licenses/minio/LICENSE
+USER storage
+EXPOSE 9000
+ENTRYPOINT ["/usr/local/bin/minio"]

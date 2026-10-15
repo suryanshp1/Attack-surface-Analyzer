@@ -1,0 +1,25 @@
+FROM python:3.13-alpine AS scanners
+ARG TARGETARCH
+COPY scripts/fetch-scanners.py /fetch.py
+RUN python /fetch.py ${TARGETARCH} /tools
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/*.go backend/schema.sql ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /surfacer .
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini libpcap0.8 && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home scanner
+COPY --from=build /surfacer /usr/local/bin/surfacer
+COPY --from=scanners /tools /usr/local/bin/
+COPY backend/templates /opt/surfacer/templates
+USER scanner
+ENV HOME=/tmp TEMPLATES_DIR=/opt/surfacer/templates
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/surfacer", "worker"]
+
+FROM build AS test-build
+RUN CGO_ENABLED=0 go test -c -o /native-tests .
+FROM runtime AS test
+COPY --from=test-build /native-tests /native-tests
+ENV SURFACER_NATIVE_TESTS=true
+ENTRYPOINT ["/native-tests", "-test.v", "-test.run=TestNativeScannerPipeline"]

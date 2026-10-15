@@ -1,0 +1,2 @@
+// Runs in the document head before React starts, so a saved dark preference does not flash light.
+export const appearanceBootstrap = `(function(){var m='system';try{var v=localStorage.getItem('surfacer.appearance');if(v==='light'||v==='dark')m=v}catch(e){}var r=document.documentElement;r.dataset.appearance=m;r.dataset.theme=m==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):m})();`;

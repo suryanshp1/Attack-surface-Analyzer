@@ -1,0 +1,477 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Surfacer API",
+    "version": "0.2.0",
+    "description": "Use surf_key_ member keys as Bearer credentials through the web URL. Bootstrap browser session is HttpOnly. JSON writes are capped at 32 KiB. Request payload examples are in README.md."
+  },
+  "servers": [
+    {
+      "url": "/api"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "paths": {
+    "/state": {
+      "get": {
+        "summary": "Workspace snapshot",
+        "description": "Minimum role: viewer. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "summary": "Current identity",
+        "description": "Minimum role: viewer. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/targets": {
+      "post": {
+        "summary": "Add domain target",
+        "description": "Minimum role: owner. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          },
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/targets/{id}": {
+      "patch": {
+        "summary": "Update schedule",
+        "description": "Minimum role: owner. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/targets/{id}/verify": {
+      "post": {
+        "summary": "Check optional DNS proof",
+        "description": "Minimum role: owner. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/scans": {
+      "post": {
+        "summary": "Queue selected target scan",
+        "description": "Minimum role: analyst. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          },
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/scans/{id}/cancel": {
+      "post": {
+        "summary": "Cancel scan",
+        "description": "Minimum role: analyst. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/findings/{id}": {
+      "patch": {
+        "summary": "Update finding status or notes",
+        "description": "Minimum role: analyst. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/settings": {
+      "patch": {
+        "summary": "Update workspace settings",
+        "description": "Minimum role: owner. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/members": {
+      "post": {
+        "summary": "Create member and return initial key once",
+        "description": "Minimum role: owner. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          },
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/members/{id}": {
+      "patch": {
+        "summary": "Change member role or disable access",
+        "description": "Minimum role: owner. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api-keys": {
+      "post": {
+        "summary": "Issue expiring member key, returned once",
+        "description": "Minimum role: analyst. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          },
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/api-keys/{id}/revoke": {
+      "post": {
+        "summary": "Revoke own key; owners can revoke any key",
+        "description": "Minimum role: analyst. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus counts without target or evidence data",
+        "description": "Minimum role: owner. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "summary": "Authenticated SSE state stream; rechecks key revocation",
+        "description": "Minimum role: viewer. This deployment contains one workspace.",
+        "responses": {
+          "200": {
+            "description": "Success (creation endpoints return 201)"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked access"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Persistence failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/reports.pdf": {
+      "get": {
+        "summary": "Download filtered PDF report",
+        "parameters": [
+          {
+            "name": "targetId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PDF report; first 1000 assets/findings, truncation explicitly labeled",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "400": {
+            "description": "Invalid filter"
+          },
+          "404": {
+            "description": "Unknown target"
+          }
+        }
+      }
+    },
+    "/scans/{id}/retry": {
+      "post": {
+        "summary": "Resume partial or failed scan from saved checkpoints",
+        "description": "Minimum role: analyst. Creates a new queued run; completed stages and port batches are retained. Rejects concurrent target scans.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queued resumed run"
+          },
+          "409": {
+            "description": "Scan not eligible or target already active"
+          },
+          "403": {
+            "description": "Role or ownership denied"
+          }
+        }
+      }
+    }
+  }
+}

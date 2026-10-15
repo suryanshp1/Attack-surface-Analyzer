@@ -1,0 +1,7 @@
+node_modules
+.next
+output
+.env*
+.agents
+backend/data
+.git
