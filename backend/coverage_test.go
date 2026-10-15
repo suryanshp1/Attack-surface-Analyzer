@@ -173,3 +173,42 @@ func TestConcurrentInspectCertificates(t *testing.T) {
 		t.Fatalf("expected 15 assets, got %d", len(result.Assets))
 	}
 }
+
+func TestHistoricalDecoupledExecution(t *testing.T) {
+	worker := Worker{scannerCommand: func(ctx context.Context, name string, args []string, proxy, dir string) ([]byte, string, error) {
+		time.Sleep(50 * time.Millisecond)
+		return []byte("https://owned.example/api/v1\nhttps://owned.example/docs\n"), "", nil
+	}}
+	claim := Claim{Target: Target{ID: "target-1", Domain: "owned.example"}}
+	cp := Checkpoint{Assets: []Asset{{Host: "owned.example", URL: "https://owned.example"}}}
+
+	type histRes struct {
+		history []Endpoint
+		issues  []string
+		logs    string
+		err     error
+	}
+	ch := make(chan histRes, 1)
+	go func() {
+		resCp, logs, err := worker.historical(context.Background(), claim, Checkpoint{}, "", t.TempDir())
+		ch <- histRes{history: resCp.History, issues: resCp.SourceIssues, logs: logs, err: err}
+	}()
+
+	// Simulate parallel stage work
+	time.Sleep(30 * time.Millisecond)
+	cp.Assets[0].Ports = []int{443, 80}
+
+	res := <-ch
+	if res.err != nil {
+		t.Fatalf("historical failed: %v", res.err)
+	}
+	cp.History = append(cp.History, res.history...)
+	cp.SourceIssues = append(cp.SourceIssues, res.issues...)
+
+	if len(cp.History) != 2 {
+		t.Fatalf("expected 2 historical endpoints, got %d", len(cp.History))
+	}
+	if len(cp.Assets[0].Ports) != 2 {
+		t.Fatalf("expected 2 ports on asset, got %d", len(cp.Assets[0].Ports))
+	}
+}

@@ -227,6 +227,13 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 	claim.Proxy = proxy.String()
 	proxy.User = url.UserPassword("scan", claim.Permit)
 	proxyURL := proxy.String()
+	type historicalResult struct {
+		history []Endpoint
+		issues  []string
+		logs    string
+		err     error
+	}
+	var histCh chan historicalResult
 	for stage := range sc.Stages {
 		if sc.Stages[stage].Status == "completed" {
 			continue
@@ -254,12 +261,29 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			cp, logs, err = w.discover(stageCtx, claim, cp, proxyURL, workdir)
 		case "DNS resolution":
 			cp, logs, err = w.resolve(stageCtx, claim, cp, workdir)
+			if err == nil && histCh == nil {
+				histCh = make(chan historicalResult, 1)
+				go func() {
+					hCtx, hCancel := context.WithTimeout(ctx, 7*time.Minute)
+					defer hCancel()
+					hCp, hLogs, hErr := w.historical(hCtx, claim, Checkpoint{}, proxyURL, workdir)
+					histCh <- historicalResult{history: hCp.History, issues: hCp.SourceIssues, logs: hLogs, err: hErr}
+				}()
+			}
 		case "Port discovery":
 			cp, logs, err = w.scanPorts(stageCtx, claim, cp, workdir)
 		case "TLS assessment":
 			cp, logs, err = w.assessTLS(stageCtx, claim, cp, workdir)
 		case "Historical discovery":
-			cp, logs, err = w.historical(stageCtx, claim, cp, proxyURL, workdir)
+			if histCh != nil {
+				res := <-histCh
+				cp.History = append(cp.History, res.history...)
+				cp.SourceIssues = append(cp.SourceIssues, res.issues...)
+				logs = res.logs
+				err = res.err
+			} else {
+				cp, logs, err = w.historical(stageCtx, claim, cp, proxyURL, workdir)
+			}
 		case "HTTP probing":
 			cp, logs, err = w.probe(stageCtx, claim, cp, proxyURL, workdir)
 		case "TLS inspection":
