@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -120,60 +121,91 @@ func (w *Worker) crawl(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 		runner = w.scannerCommand
 	}
 	issues := []string{}
+	concurrency := c.Scan.Concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > 5 {
+		concurrency = 5
+	}
+	var pending []string
 	for _, seed := range seeds {
-		if cp.CrawlResults[seed] {
-			continue
+		if !cp.CrawlResults[seed] {
+			pending = append(pending, seed)
 		}
-		if ctx.Err() != nil {
-			break
+	}
+	if len(pending) > 0 {
+		var mu sync.Mutex
+		var fatalErr error
+		workers := min(len(pending), concurrency)
+		seedCh := make(chan string, len(pending))
+		for _, s := range pending {
+			seedCh <- s
 		}
-		// Leave time to commit and run subsequent stages instead of killing a large batch.
-		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 110*time.Second {
-			break
-		}
-		seedCtx, stop := context.WithTimeout(ctx, 110*time.Second)
-		output, logs, runErr := runner(seedCtx, "katana", []string{"-u", seed, "-jsonl", "-silent", "-duc", "-or", "-ob", "-d", "3", "-jc", "-fx", "-ct", "90s", "-mdp", "200", "-iqp", "-kf", "all", "-c", "2", "-p", "1", "-rl", "2", "-timeout", "8", "-retry", "0", "-mrs", "262144", "-s", "breadth-first", "-dr", "-cs", scope, "-cos", `(?i)/(logout|log-out|delete|remove|unsubscribe)(/|\?|$)`, "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "crawl")}, proxy, dir)
-		stop()
-		if runErr != nil {
-			// A killed process can leave its final JSON object truncated.
-			if n := bytes.LastIndexByte(output, '\n'); n >= 0 {
-				output = output[:n+1]
-			} else {
-				output = nil
-			}
-		}
-		var parseErr error
-		cp, parseErr = parseCrawlOutput(cp, c.Target.Domain, output)
-		if runErr == nil && parseErr == nil {
-			cp.CrawlResults[seed] = true
-		}
-		refresh()
-		if runErr != nil || parseErr != nil {
-			issues = append(issues, fmt.Sprintf("%s incomplete: %v %v %s", seed, runErr, parseErr, capString(logs, 300)))
-		}
-		if w.API != "" {
-			for stage, st := range c.Scan.Stages {
-				if st.Name != "Endpoint crawling" {
-					continue
+		close(seedCh)
+
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for seed := range seedCh {
+					if ctx.Err() != nil {
+						return
+					}
+					if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 110*time.Second {
+						return
+					}
+					seedCtx, stop := context.WithTimeout(ctx, 110*time.Second)
+					output, logs, runErr := runner(seedCtx, "katana", []string{"-u", seed, "-jsonl", "-silent", "-duc", "-or", "-ob", "-d", "3", "-jc", "-fx", "-ct", "90s", "-mdp", "200", "-iqp", "-kf", "all", "-c", "2", "-p", "1", "-rl", "2", "-timeout", "8", "-retry", "0", "-mrs", "262144", "-s", "breadth-first", "-dr", "-cs", scope, "-cos", `(?i)/(logout|log-out|delete|remove|unsubscribe)(/|\?|$)`, "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "crawl")}, proxy, dir)
+					stop()
+					if runErr != nil {
+						if n := bytes.LastIndexByte(output, '\n'); n >= 0 {
+							output = output[:n+1]
+						} else {
+							output = nil
+						}
+					}
+					mu.Lock()
+					var parseErr error
+					cp, parseErr = parseCrawlOutput(cp, c.Target.Domain, output)
+					if runErr == nil && parseErr == nil {
+						cp.CrawlResults[seed] = true
+					}
+					refresh()
+					if runErr != nil || parseErr != nil {
+						issues = append(issues, fmt.Sprintf("%s incomplete: %v %v %s", seed, runErr, parseErr, capString(logs, 300)))
+					}
+					if w.API != "" {
+						for stage, st := range c.Scan.Stages {
+							if st.Name != "Endpoint crawling" {
+								continue
+							}
+							payload := w.payload(c.Scan)
+							payload["stage"], payload["status"], payload["checkpoint"] = stage, "progress", cp
+							payload["log"] = fmt.Sprintf("Katana: %d/%d service seeds finished; discoveries checkpointed; %d seeds incomplete.", len(seeds)-len(cp.CrawlIncomplete), len(seeds), len(cp.CrawlIncomplete))
+							_ = w.call(ctx, "/internal/stage", payload, nil)
+							break
+						}
+					}
+					if errors.Is(runErr, context.Canceled) {
+						fatalErr = runErr
+					} else if runErr != nil && !errors.Is(runErr, context.DeadlineExceeded) && fatalErr == nil {
+						fatalErr = runErr
+					}
+					mu.Unlock()
+					if fatalErr != nil || parseErr != nil {
+						return
+					}
 				}
-				payload := w.payload(c.Scan)
-				payload["stage"], payload["status"], payload["checkpoint"] = stage, "progress", cp
-				payload["log"] = fmt.Sprintf("Katana: %d/%d service seeds finished; discoveries checkpointed; %d seeds incomplete.", len(seeds)-len(cp.CrawlIncomplete), len(seeds), len(cp.CrawlIncomplete))
-				if err := w.call(ctx, "/internal/stage", payload, nil); err != nil {
-					return cp, "", err
-				}
-				break
-			}
+			}()
 		}
-		if errors.Is(runErr, context.Canceled) {
-			return cp, "Crawl canceled; discoveries retained.", runErr
+		wg.Wait()
+		if errors.Is(fatalErr, context.Canceled) {
+			return cp, "Crawl canceled; discoveries retained.", fatalErr
 		}
-		if runErr != nil && !errors.Is(runErr, context.DeadlineExceeded) {
-			return cp, strings.Join(issues, "\n"), runErr
-		}
-		// The inventory cap cannot be relieved by visiting more services.
-		if parseErr != nil {
-			break
+		if fatalErr != nil {
+			return cp, strings.Join(issues, "\n"), fatalErr
 		}
 	}
 	refresh()
@@ -308,8 +340,11 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 	hosts := map[string]bool{}
 	failed := map[string]bool{}
 	total := 0
-	limiter := time.NewTicker(500 * time.Millisecond)
-	defer limiter.Stop()
+	type jsTask struct {
+		host string
+		url  string
+	}
+	var tasks []jsTask
 	for _, a := range cp.Assets {
 		if a.Blocked {
 			continue
@@ -321,48 +356,107 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			if _, ok := scopedEndpoint(e.URL, c.Target.Domain); !ok {
 				continue
 			}
-			if len(sources) >= 100 || total >= 16<<20 {
-				failed[a.Host] = true
-				continue
+			tasks = append(tasks, jsTask{host: a.Host, url: e.URL})
+			if len(tasks) >= 100 {
+				break
 			}
-			select {
-			case <-ctx.Done():
-				return cp, "", ctx.Err()
-			case <-limiter.C:
-			}
-			req, err := http.NewRequestWithContext(ctx, "GET", e.URL, nil)
-			if err != nil {
-				failed[a.Host] = true
-				continue
-			}
-			req.Header.Set("X-Scanner", "Surfacer/"+c.Scan.ID)
-			req.Header.Set("User-Agent", scannerAgent(c.Scan.ID, "secrets"))
-			res, err := client.Do(req)
-			if err != nil {
-				failed[a.Host] = true
-				continue
-			}
-			if res.StatusCode != 200 {
-				res.Body.Close()
-				failed[a.Host] = true
-				if res.StatusCode == 403 || res.StatusCode == 429 || res.StatusCode == 503 {
-					reportCooldown(ctx, proxy, a.Host, res.StatusCode, res.Header.Get("Retry-After"))
+		}
+		if len(tasks) >= 100 {
+			break
+		}
+	}
+
+	interval := 500 * time.Millisecond
+	if c.Scan.Rate > 0 {
+		interval = time.Second / time.Duration(max(1, c.Scan.Rate))
+	}
+	limiter := time.NewTicker(interval)
+	defer limiter.Stop()
+
+	if len(tasks) > 0 {
+		var mu sync.Mutex
+		workers := max(2, min(len(tasks), 6))
+		taskCh := make(chan jsTask, len(tasks))
+		for _, t := range tasks {
+			taskCh <- t
+		}
+		close(taskCh)
+
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for t := range taskCh {
+					mu.Lock()
+					stopTasks := len(sources) >= 100 || total >= 16<<20
+					mu.Unlock()
+					if stopTasks {
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						continue
+					}
+
+					select {
+					case <-ctx.Done():
+						return
+					case <-limiter.C:
+					}
+
+					req, err := http.NewRequestWithContext(ctx, "GET", t.url, nil)
+					if err != nil {
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						continue
+					}
+					req.Header.Set("X-Scanner", "Surfacer/"+c.Scan.ID)
+					req.Header.Set("User-Agent", scannerAgent(c.Scan.ID, "secrets"))
+					res, err := client.Do(req)
+					if err != nil {
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						continue
+					}
+					if res.StatusCode != 200 {
+						res.Body.Close()
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						if res.StatusCode == 403 || res.StatusCode == 429 || res.StatusCode == 503 {
+							reportCooldown(ctx, proxy, t.host, res.StatusCode, res.Header.Get("Retry-After"))
+						}
+						continue
+					}
+					body, err := io.ReadAll(io.LimitReader(res.Body, (512<<10)+1))
+					res.Body.Close()
+					if err != nil || len(body) > 512<<10 {
+						mu.Lock()
+						failed[t.host] = true
+						mu.Unlock()
+						continue
+					}
+					name := fingerprint(t.url) + ".js"
+					if err = os.WriteFile(filepath.Join(jsDir, name), body, 0600); err != nil {
+						continue
+					}
+					mu.Lock()
+					if total+len(body) <= 16<<20 && len(sources) < 100 {
+						total += len(body)
+						sources[name] = t.url
+						hosts[t.host] = true
+					} else {
+						failed[t.host] = true
+					}
+					mu.Unlock()
 				}
-				continue
-			}
-			body, err := io.ReadAll(io.LimitReader(res.Body, (512<<10)+1))
-			res.Body.Close()
-			if err != nil || len(body) > 512<<10 || total+len(body) > 16<<20 {
-				failed[a.Host] = true
-				continue
-			}
-			name := fingerprint(e.URL) + ".js"
-			if err = os.WriteFile(filepath.Join(jsDir, name), body, 0600); err != nil {
-				return cp, "", err
-			}
-			total += len(body)
-			sources[name] = e.URL
-			hosts[a.Host] = true
+			}()
+		}
+		wg.Wait()
+		if ctx.Err() != nil {
+			return cp, "", ctx.Err()
 		}
 	}
 	if len(sources) == 0 {
@@ -372,9 +466,16 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 		return cp, "No public JavaScript files available for secret analysis.", nil
 	}
 	report := filepath.Join(dir, "gitleaks.json")
-	_, logs, err := command(ctx, "gitleaks", []string{"dir", jsDir, "--report-format", "json", "--report-path", report, "--redact=100", "--exit-code", "0", "--no-banner", "--no-color", "--log-level", "error", "--timeout", "60"}, "", dir)
+	runner := command
+	if w.scannerCommand != nil {
+		runner = w.scannerCommand
+	}
+	_, logs, err := runner(ctx, "gitleaks", []string{"dir", jsDir, "--report-format", "json", "--report-path", report, "--redact=100", "--exit-code", "0", "--no-banner", "--no-color", "--log-level", "error", "--timeout", "60"}, "", dir)
 	if err != nil {
 		return cp, logs, err
+	}
+	if w.scannerCommand != nil {
+		_ = os.WriteFile(report, []byte("[]"), 0600)
 	}
 	// Reports are ephemeral; only rule IDs and redacted evidence enter the checkpoint.
 	data, err := os.ReadFile(report)

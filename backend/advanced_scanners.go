@@ -281,7 +281,11 @@ func (w *Worker) assessTLS(ctx context.Context, c Claim, cp Checkpoint, dir stri
 	return cp, fmt.Sprintf("TLSx assessed %d public TLS services; protocol, cipher, SAN, issuer, expiry and trust metadata. %s", count, logs), err
 }
 func (w *Worker) historical(ctx context.Context, c Claim, cp Checkpoint, proxy, dir string) (Checkpoint, string, error) {
-	out, logs, err := command(ctx, "gau", []string{c.Target.Domain, "--providers", "wayback,commoncrawl", "--subs", "--threads", "1", "--timeout", "12", "--retries", "0", "--proxy", proxy}, proxy, dir)
+	runner := command
+	if w.scannerCommand != nil {
+		runner = w.scannerCommand
+	}
+	out, logs, err := runner(ctx, "gau", []string{c.Target.Domain, "--providers", "wayback,commoncrawl", "--subs", "--threads", "1", "--timeout", "12", "--retries", "0", "--proxy", proxy}, proxy, dir)
 	if err != nil {
 		cp.SourceIssues = append(cp.SourceIssues, "Historical providers unavailable; live scan continues.")
 		return cp, "Historical discovery unavailable: " + logs, nil

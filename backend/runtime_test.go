@@ -41,6 +41,38 @@ func TestDNSRebindingAndScopeGateway(t *testing.T) {
 		t.Fatal("out-of-scope proxy request accepted")
 	}
 }
+func TestGatewayDualStackFallback(t *testing.T) {
+	dialedOrder := []string{}
+	pipeClient, pipeServer := net.Pipe()
+	defer pipeServer.Close()
+	defer pipeClient.Close()
+
+	g := Gateway{
+		lookup: func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{
+				netip.MustParseAddr("2606:4700:3036::ac43:b8fc"),
+				netip.MustParseAddr("1.1.1.1"),
+			}, nil
+		},
+		dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialedOrder = append(dialedOrder, address)
+			if strings.HasPrefix(address, "1.1.1.1") {
+				return pipeClient, nil
+			}
+			return nil, context.DeadlineExceeded
+		},
+	}
+	conn, err := g.safeDial(context.Background(), "tcp", "owned.com:443")
+	if err != nil {
+		t.Fatalf("expected successful fallback, got: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connection")
+	}
+	if len(dialedOrder) == 0 || !strings.HasPrefix(dialedOrder[0], "1.1.1.1") {
+		t.Fatalf("expected IPv4 address to be dialed first, got order: %v", dialedOrder)
+	}
+}
 func TestPermitTamperingAndExpiry(t *testing.T) {
 	token := signPermit(Permit{"scan", "owned.com", time.Now().Add(time.Minute).Unix(), "fixture-lease"}, "secret")
 	if _, err := checkPermit(token, "secret"); err != nil {

@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -75,17 +76,24 @@ func (g *Gateway) resolveDial(ctx context.Context, host, port string) (net.Conn,
 	if len(ips) == 0 {
 		return nil, errors.New("host has no public addresses")
 	}
+	var public []netip.Addr
 	for _, ip := range ips {
 		if !publicIP(ip) {
 			return nil, fmt.Errorf("blocked non-public destination %s", ip)
 		}
+		public = append(public, ip)
 	}
+	sort.SliceStable(public, func(i, j int) bool {
+		return public[i].Is4() && !public[j].Is4()
+	})
 	dial := g.dial
 	if dial == nil {
-		dial = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+		dial = (&net.Dialer{Timeout: 4 * time.Second}).DialContext
 	}
-	for _, ip := range ips {
-		conn, e := dial(ctx, "tcp", net.JoinHostPort(ip.String(), port))
+	for _, ip := range public {
+		attemptCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		conn, e := dial(attemptCtx, "tcp", net.JoinHostPort(ip.String(), port))
+		cancel()
 		if e == nil {
 			return conn, nil
 		}
