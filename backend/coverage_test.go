@@ -149,3 +149,27 @@ func TestHTTPDeadlineRetainsRealServiceResponses(t *testing.T) {
 		t.Fatalf("HTTP deadline lost results or claimed clean coverage: %s %v", log, err)
 	}
 }
+
+func TestConcurrentInspectCertificates(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	assets := make([]Asset, 15)
+	for i := range assets {
+		assets[i] = Asset{
+			Host: fmt.Sprintf("host%d.owned.example", i),
+			URL:  ts.URL,
+		}
+	}
+	cp := Checkpoint{Assets: assets}
+	worker := Worker{}
+	result, _, err := worker.inspectCertificates(context.Background(), cp, ts.URL, "test-scan", 50)
+	if err != nil {
+		t.Fatalf("inspectCertificates failed: %v", err)
+	}
+	if len(result.Assets) != 15 {
+		t.Fatalf("expected 15 assets, got %d", len(result.Assets))
+	}
+}

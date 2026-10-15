@@ -458,25 +458,50 @@ func (w *Worker) resolve(ctx context.Context, c Claim, cp Checkpoint, dir string
 	resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "udp", c.DNS)
 	}}
+	var unresolved []string
 	for _, h := range hosts {
-		if len(cp.DNS[h]) > 0 {
-			continue
+		if len(cp.DNS[h]) == 0 {
+			unresolved = append(unresolved, h)
 		}
-		ips, e := resolver.LookupNetIP(ctx, "ip", h)
-		if e != nil {
-			var dnsError *net.DNSError
-			if errors.As(e, &dnsError) && dnsError.IsNotFound {
-				cp.DNS[h] = []string{}
-			} else {
-				delete(cp.DNS, h)
-				cp.Blocked = append(cp.Blocked, h)
-			}
-			continue
+	}
+	if len(unresolved) > 0 {
+		var mu sync.Mutex
+		workers := min(len(unresolved), 20)
+		ch := make(chan string, len(unresolved))
+		for _, h := range unresolved {
+			ch <- h
 		}
-		cp.DNS[h] = []string{}
-		for _, ip := range ips {
-			cp.DNS[h] = append(cp.DNS[h], ip.String())
+		close(ch)
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for h := range ch {
+					if ctx.Err() != nil {
+						return
+					}
+					ips, e := resolver.LookupNetIP(ctx, "ip", h)
+					mu.Lock()
+					if e != nil {
+						var dnsError *net.DNSError
+						if errors.As(e, &dnsError) && dnsError.IsNotFound {
+							cp.DNS[h] = []string{}
+						} else {
+							delete(cp.DNS, h)
+							cp.Blocked = append(cp.Blocked, h)
+						}
+					} else {
+						cp.DNS[h] = []string{}
+						for _, ip := range ips {
+							cp.DNS[h] = append(cp.DNS[h], ip.String())
+						}
+					}
+					mu.Unlock()
+				}
+			}()
 		}
+		wg.Wait()
 	}
 	for _, h := range hosts {
 		ips := cp.DNS[h]
@@ -660,36 +685,67 @@ func (w *Worker) inspectCertificates(ctx context.Context, cp Checkpoint, proxy, 
 	limiter := time.NewTicker(time.Second / time.Duration(max(1, rate)))
 	defer limiter.Stop()
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	type inspectTask struct {
+		index int
+		host  string
+		url   string
+	}
+	var tasks []inspectTask
 	for i := range cp.Assets {
 		a := &cp.Assets[i]
-		if a.Blocked || a.URL == "" {
-			continue
+		if !a.Blocked && a.URL != "" {
+			tasks = append(tasks, inspectTask{index: i, host: a.Host, url: a.URL})
 		}
-		select {
-		case <-ctx.Done():
+	}
+	if len(tasks) > 0 {
+		var mu sync.Mutex
+		workers := max(2, min(len(tasks), min(rate, 8)))
+		taskCh := make(chan inspectTask, len(tasks))
+		for _, t := range tasks {
+			taskCh <- t
+		}
+		close(taskCh)
+
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for t := range taskCh {
+					select {
+					case <-ctx.Done():
+						return
+					case <-limiter.C:
+					}
+					req, err := http.NewRequestWithContext(ctx, "HEAD", t.url, nil)
+					if err != nil {
+						continue
+					}
+					req.Header.Set("User-Agent", scannerAgent(scanID, "tls"))
+					req.Header.Set("X-Scanner", "Surfacer/"+scanID)
+					response, err := client.Do(req)
+					mu.Lock()
+					if err != nil {
+						cp.Blocked = append(cp.Blocked, t.host)
+						mu.Unlock()
+						continue
+					}
+					response.Body.Close()
+					if response.StatusCode == 403 || response.StatusCode == 429 || response.StatusCode == 503 {
+						cp.Assets[t.index].Blocked = true
+						cp.Blocked = append(cp.Blocked, t.host)
+						reportCooldown(ctx, proxy, t.host, response.StatusCode, response.Header.Get("Retry-After"))
+					} else if response.TLS != nil && len(response.TLS.PeerCertificates) > 0 {
+						cp.Assets[t.index].TLS = response.TLS.PeerCertificates[0].NotAfter.UTC().Format(time.RFC3339)
+					}
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		if ctx.Err() != nil {
 			return cp, "", ctx.Err()
-		case <-limiter.C:
-		}
-		req, err := http.NewRequestWithContext(ctx, "HEAD", a.URL, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", scannerAgent(scanID, "tls"))
-		req.Header.Set("X-Scanner", "Surfacer/"+scanID)
-		response, err := client.Do(req)
-		if err != nil {
-			cp.Blocked = append(cp.Blocked, a.Host)
-			continue
-		}
-		response.Body.Close()
-		if response.StatusCode == 403 || response.StatusCode == 429 || response.StatusCode == 503 {
-			a.Blocked = true
-			cp.Blocked = append(cp.Blocked, a.Host)
-			reportCooldown(ctx, proxy, a.Host, response.StatusCode, response.Header.Get("Retry-After"))
-			continue
-		}
-		if response.TLS != nil && len(response.TLS.PeerCertificates) > 0 {
-			a.TLS = response.TLS.PeerCertificates[0].NotAfter.UTC().Format(time.RFC3339)
 		}
 	}
 	return tlsFindings(cp)
