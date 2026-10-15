@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -120,60 +121,91 @@ func (w *Worker) crawl(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 		runner = w.scannerCommand
 	}
 	issues := []string{}
+	concurrency := c.Scan.Concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > 5 {
+		concurrency = 5
+	}
+	var pending []string
 	for _, seed := range seeds {
-		if cp.CrawlResults[seed] {
-			continue
+		if !cp.CrawlResults[seed] {
+			pending = append(pending, seed)
 		}
-		if ctx.Err() != nil {
-			break
+	}
+	if len(pending) > 0 {
+		var mu sync.Mutex
+		var fatalErr error
+		workers := min(len(pending), concurrency)
+		seedCh := make(chan string, len(pending))
+		for _, s := range pending {
+			seedCh <- s
 		}
-		// Leave time to commit and run subsequent stages instead of killing a large batch.
-		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 110*time.Second {
-			break
-		}
-		seedCtx, stop := context.WithTimeout(ctx, 110*time.Second)
-		output, logs, runErr := runner(seedCtx, "katana", []string{"-u", seed, "-jsonl", "-silent", "-duc", "-or", "-ob", "-d", "3", "-jc", "-fx", "-ct", "90s", "-mdp", "200", "-iqp", "-kf", "all", "-c", "2", "-p", "1", "-rl", "2", "-timeout", "8", "-retry", "0", "-mrs", "262144", "-s", "breadth-first", "-dr", "-cs", scope, "-cos", `(?i)/(logout|log-out|delete|remove|unsubscribe)(/|\?|$)`, "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "crawl")}, proxy, dir)
-		stop()
-		if runErr != nil {
-			// A killed process can leave its final JSON object truncated.
-			if n := bytes.LastIndexByte(output, '\n'); n >= 0 {
-				output = output[:n+1]
-			} else {
-				output = nil
-			}
-		}
-		var parseErr error
-		cp, parseErr = parseCrawlOutput(cp, c.Target.Domain, output)
-		if runErr == nil && parseErr == nil {
-			cp.CrawlResults[seed] = true
-		}
-		refresh()
-		if runErr != nil || parseErr != nil {
-			issues = append(issues, fmt.Sprintf("%s incomplete: %v %v %s", seed, runErr, parseErr, capString(logs, 300)))
-		}
-		if w.API != "" {
-			for stage, st := range c.Scan.Stages {
-				if st.Name != "Endpoint crawling" {
-					continue
+		close(seedCh)
+
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for seed := range seedCh {
+					if ctx.Err() != nil {
+						return
+					}
+					if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 110*time.Second {
+						return
+					}
+					seedCtx, stop := context.WithTimeout(ctx, 110*time.Second)
+					output, logs, runErr := runner(seedCtx, "katana", []string{"-u", seed, "-jsonl", "-silent", "-duc", "-or", "-ob", "-d", "3", "-jc", "-fx", "-ct", "90s", "-mdp", "200", "-iqp", "-kf", "all", "-c", "2", "-p", "1", "-rl", "2", "-timeout", "8", "-retry", "0", "-mrs", "262144", "-s", "breadth-first", "-dr", "-cs", scope, "-cos", `(?i)/(logout|log-out|delete|remove|unsubscribe)(/|\?|$)`, "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "crawl")}, proxy, dir)
+					stop()
+					if runErr != nil {
+						if n := bytes.LastIndexByte(output, '\n'); n >= 0 {
+							output = output[:n+1]
+						} else {
+							output = nil
+						}
+					}
+					mu.Lock()
+					var parseErr error
+					cp, parseErr = parseCrawlOutput(cp, c.Target.Domain, output)
+					if runErr == nil && parseErr == nil {
+						cp.CrawlResults[seed] = true
+					}
+					refresh()
+					if runErr != nil || parseErr != nil {
+						issues = append(issues, fmt.Sprintf("%s incomplete: %v %v %s", seed, runErr, parseErr, capString(logs, 300)))
+					}
+					if w.API != "" {
+						for stage, st := range c.Scan.Stages {
+							if st.Name != "Endpoint crawling" {
+								continue
+							}
+							payload := w.payload(c.Scan)
+							payload["stage"], payload["status"], payload["checkpoint"] = stage, "progress", cp
+							payload["log"] = fmt.Sprintf("Katana: %d/%d service seeds finished; discoveries checkpointed; %d seeds incomplete.", len(seeds)-len(cp.CrawlIncomplete), len(seeds), len(cp.CrawlIncomplete))
+							_ = w.call(ctx, "/internal/stage", payload, nil)
+							break
+						}
+					}
+					if errors.Is(runErr, context.Canceled) {
+						fatalErr = runErr
+					} else if runErr != nil && !errors.Is(runErr, context.DeadlineExceeded) && fatalErr == nil {
+						fatalErr = runErr
+					}
+					mu.Unlock()
+					if fatalErr != nil || parseErr != nil {
+						return
+					}
 				}
-				payload := w.payload(c.Scan)
-				payload["stage"], payload["status"], payload["checkpoint"] = stage, "progress", cp
-				payload["log"] = fmt.Sprintf("Katana: %d/%d service seeds finished; discoveries checkpointed; %d seeds incomplete.", len(seeds)-len(cp.CrawlIncomplete), len(seeds), len(cp.CrawlIncomplete))
-				if err := w.call(ctx, "/internal/stage", payload, nil); err != nil {
-					return cp, "", err
-				}
-				break
-			}
+			}()
 		}
-		if errors.Is(runErr, context.Canceled) {
-			return cp, "Crawl canceled; discoveries retained.", runErr
+		wg.Wait()
+		if errors.Is(fatalErr, context.Canceled) {
+			return cp, "Crawl canceled; discoveries retained.", fatalErr
 		}
-		if runErr != nil && !errors.Is(runErr, context.DeadlineExceeded) {
-			return cp, strings.Join(issues, "\n"), runErr
-		}
-		// The inventory cap cannot be relieved by visiting more services.
-		if parseErr != nil {
-			break
+		if fatalErr != nil {
+			return cp, strings.Join(issues, "\n"), fatalErr
 		}
 	}
 	refresh()

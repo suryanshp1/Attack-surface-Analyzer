@@ -152,3 +152,25 @@ func TestCrawlCheckpointRejectsEscapedAndParameterizedSeeds(t *testing.T) {
 		}
 	}
 }
+
+func TestConcurrentCrawlSeeds(t *testing.T) {
+	cp := Checkpoint{Assets: []Asset{
+		{Host: "a.owned.example", URL: "https://a.owned.example"},
+		{Host: "b.owned.example", URL: "https://b.owned.example"},
+		{Host: "c.owned.example", URL: "https://c.owned.example"},
+	}}
+	w := Worker{scannerCommand: func(ctx context.Context, name string, args []string, proxy, dir string) ([]byte, string, error) {
+		seed := args[1]
+		return []byte(fmt.Sprintf("{\"request\":{\"endpoint\":\"%s/page\"},\"response\":{\"status_code\":200}}\n", seed)), "", nil
+	}}
+	result, _, err := w.crawl(context.Background(), Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Concurrency: 3}}, cp, "", t.TempDir())
+	if err != nil {
+		t.Fatalf("crawl failed: %v", err)
+	}
+	if len(result.CrawlResults) != 3 {
+		t.Fatalf("expected 3 completed seeds, got %d", len(result.CrawlResults))
+	}
+	if len(result.CrawlIncomplete) != 0 {
+		t.Fatalf("expected 0 incomplete seeds, got %d", len(result.CrawlIncomplete))
+	}
+}
