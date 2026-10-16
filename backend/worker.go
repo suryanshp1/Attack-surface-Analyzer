@@ -328,15 +328,15 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 		p["log"] = logs
 		p["status"] = "completed"
 		if err != nil {
-			p["status"] = "failed"
-			p["error"] = err.Error()
+			issue := fmt.Sprintf("Stage %s encountered issue: %v. Downstream stages continue.", sc.Stages[stage].Name, err)
+			cp.SourceIssues = append(cp.SourceIssues, issue)
+			logs += "\n" + issue
+			p["checkpoint"] = cp
+			p["log"] = logs
+			Log(ctx).Warn("worker_stage_skipped_error", "scan_id", sc.ID, "stage", sc.Stages[stage].Name, "err", err.Error())
 		}
 		if e := w.call(ctx, "/internal/stage", p, nil); e != nil {
 			log.Printf("stage commit: %v", e)
-			return
-		}
-		if err != nil {
-			log.Printf("scan %s stage %d: %v", sc.ID, stage, err)
 			return
 		}
 	}
@@ -578,7 +578,13 @@ func (w *Worker) probe(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 	output, logs, err := runner(ctx, "httpx", []string{"-l", input, "-json", "-silent", "-duc", "-status-code", "-probe", "-no-fallback-scheme", "-title", "-tech-detect", "-ip", "-tls-grab", "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "http"), "-random-agent=false", "-rl", strconv.Itoa(c.Scan.Rate), "-threads", strconv.Itoa(c.Scan.Concurrency), "-timeout", "10", "-retries", "1", "-r", c.DNS, "-follow-host-redirects", "-max-redirects", "3", "-response-size-to-read", "65536"}, proxy, dir)
 	incomplete := errors.Is(err, context.DeadlineExceeded)
 	if err != nil && !incomplete {
-		return cp, logs, err
+		if errors.Is(err, context.Canceled) {
+			return cp, logs, err
+		}
+		issue := fmt.Sprintf("HTTP probing process encountered issue: %v", err)
+		cp.SourceIssues = append(cp.SourceIssues, issue)
+		logs += "\n" + issue
+		incomplete = true
 	}
 	if incomplete {
 		if last := bytes.LastIndexByte(output, '\n'); last >= 0 {
@@ -810,6 +816,7 @@ func tlsFindings(cp Checkpoint) (Checkpoint, string, error) {
 			finding := Finding{Host: a.Host, Template: "tls-expiry", MatchedAt: a.URL, Title: "TLS certificate expiring soon", Severity: "medium", Description: "The observed TLS certificate expires within 14 days.", Remediation: "Renew the certificate and verify automatic renewal.", Evidence: "URL: " + a.URL + "\nCertificate expires: " + a.TLS}
 			clarifyCertificateFinding(&finding)
 			cp.Findings = append(cp.Findings, finding)
+			Log(context.Background()).Info("finding_discovered", "stage", "TLS inspection", "host", finding.Host, "severity", finding.Severity, "template", finding.Template, "title", finding.Title)
 		}
 	}
 	return cp, "TLS certificate data extracted by HTTPx and evaluated with Go crypto/time libraries.", nil
@@ -945,11 +952,20 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 					evidence = fmt.Sprintf("Nuclei matched %s at %s. Sensitive response body omitted from stored evidence.", r.Template, value)
 				}
 			}
-			cp.Findings = append(cp.Findings, Finding{Template: r.Template, Host: u.Hostname(), MatchedAt: r.Matched, Title: capString(r.Info.Name, 300), Severity: r.Info.Severity, Description: capString(r.Info.Description, 2000), Remediation: capString(r.Info.Remediation, 2000), Evidence: evidence})
+			finding := Finding{Template: r.Template, Host: u.Hostname(), MatchedAt: r.Matched, Title: capString(r.Info.Name, 300), Severity: r.Info.Severity, Description: capString(r.Info.Description, 2000), Remediation: capString(r.Info.Remediation, 2000), Evidence: evidence}
+			cp.Findings = append(cp.Findings, finding)
+			findingLog := fmt.Sprintf("[Finding] %s (%s) on %s at %s", finding.Title, finding.Severity, finding.Host, finding.MatchedAt)
+			logs = append(logs, findingLog)
+			Log(ctx).Info("finding_discovered", "stage", "Detection", "host", finding.Host, "severity", finding.Severity, "template", finding.Template, "title", finding.Title, "matched_at", finding.MatchedAt)
 			return nil
 		})
 		if e != nil {
-			return cp, strings.Join(logs, "\n"), e
+			if errors.Is(e, context.Canceled) {
+				return cp, strings.Join(logs, "\n"), e
+			}
+			issue := fmt.Sprintf("Nuclei batch detection error: %v", e)
+			cp.SourceIssues = append(cp.SourceIssues, issue)
+			logs = append(logs, issue)
 		}
 		if parseErr != nil {
 			return cp, strings.Join(logs, "\n"), parseErr
@@ -969,7 +985,13 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 			}
 		}
 	}
-	return cp, fmt.Sprintf("%d signed curated HTTP templates; %d findings; %d hosts covered. %s", len(manifest.Templates), len(cp.Findings), len(cp.Covered), strings.Join(logs, "\n")), nil
+	detectedCount := 0
+	for _, f := range cp.Findings {
+		if !strings.HasPrefix(f.Template, "tls-") && !strings.HasPrefix(f.Template, "gitleaks:") {
+			detectedCount++
+		}
+	}
+	return cp, fmt.Sprintf("%d signed curated HTTP templates evaluated; %d findings detected in this stage (%d total scan findings); %d hosts covered. %s", len(manifest.Templates), detectedCount, len(cp.Findings), len(cp.Covered), strings.Join(logs, "\n")), nil
 }
 
 // Scanner DNS is pinned to public resolution. Resolve the trusted Docker proxy

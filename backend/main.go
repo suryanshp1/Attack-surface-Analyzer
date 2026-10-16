@@ -170,6 +170,8 @@ type Server struct {
 	gatewaySecret   string
 	persisted       map[string]string
 	requestActor    string
+	mcpOnce         sync.Once
+	mcpHandler      http.Handler
 }
 
 func id() string {
@@ -322,6 +324,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(WithRequestID(r.Context(), reqID))
 	}
 	w.Header().Set("X-Request-ID", reqID)
+	if r.URL.Path == "/api/mcp" {
+		s.serveMCP(w, r)
+		return
+	}
 	if r.URL.Path == "/health" {
 		respond(w, 200, map[string]string{"status": "ok"})
 		return

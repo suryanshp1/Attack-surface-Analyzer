@@ -472,6 +472,73 @@
           }
         }
       }
+    },
+    "/mcp": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "description": "Stateless MCP Streamable HTTP endpoint on the web service. Requires an active surf_key_ member key; browser sessions and bootstrap/service credentials are rejected. See docs/mcp.md. Internally forwarded to /api/mcp.",
+      "post": {
+        "summary": "MCP protocol requests and tool calls",
+        "description": "Minimum role: viewer for discovery and reads; analyst or owner for start_scan, cancel_scan, and triage_finding. 32 KiB request limit. API role and scan controls apply to each mutation.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MCP JSON-RPC response; tool failures set result.isError"
+          },
+          "202": {
+            "description": "Notification accepted"
+          },
+          "400": {
+            "description": "Invalid protocol message or unsupported protocol version"
+          },
+          "401": {
+            "description": "Missing, expired, revoked, or disabled member access key"
+          },
+          "403": {
+            "description": "Invalid Origin"
+          },
+          "413": {
+            "description": "Request exceeds 32 KiB at web proxy"
+          }
+        }
+      },
+      "get": {
+        "summary": "MCP streaming method negotiation",
+        "responses": {
+          "405": {
+            "description": "Standalone SSE stream is not supported by this stateless server"
+          },
+          "401": {
+            "description": "Active member access key required"
+          }
+        }
+      },
+      "delete": {
+        "summary": "MCP session method negotiation",
+        "responses": {
+          "204": {
+            "description": "Supplied session ID discarded; server retains no sessions"
+          },
+          "400": {
+            "description": "Missing session ID"
+          },
+          "401": {
+            "description": "Active member access key required"
+          }
+        }
+      }
     }
   }
 }

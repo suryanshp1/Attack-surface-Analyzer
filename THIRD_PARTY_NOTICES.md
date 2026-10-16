@@ -32,4 +32,6 @@ The default Compose deployment builds MinIO from a pinned official source revisi
 
 Frontend dependencies are recorded in `package.json` and `package-lock.json`; Go dependencies are recorded in `backend/go.mod` and `backend/go.sum`. Container base images and their installed packages retain their respective notices. Development skills and tooling under `.agents/` retain any notices supplied with those files.
 
+The API uses the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk/tree/v1.4.1) for MCP protocol negotiation, input schemas, and Streamable HTTP transport. Its upstream [license](https://github.com/modelcontextprotocol/go-sdk/blob/v1.4.1/LICENSE) retains MIT terms for existing code and Apache-2.0 terms for new contributions. Transitive dependencies retain their own licenses; the pinned module graph is recorded in `backend/go.mod` and `backend/go.sum`.
+
 This document is a component and notice-location guide, not a complete software bill of materials. Preserve the applicable upstream licenses and notices when packaging or distributing Surfacer.
