@@ -1,0 +1,56 @@
+name: Feature Proposal
+description: Propose a new capability, scanner integration, or architectural enhancement.
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals should align with Surfacer's architectural boundaries (isolated workers, gated egress gateway, strict redaction, and persistence integrity).
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Target Subsystem
+      description: Primary area affected by this feature proposal.
+      options:
+        - "web (UI, visualizations, dashboard)"
+        - "api (REST endpoints, auth, scheduling, leases)"
+        - "worker (Scan execution, normalization, crawling)"
+        - "gateway (Egress controls, pacing, scope enforcement)"
+        - "storage (PostgreSQL, MinIO/S3, reports)"
+        - "scanners (Integrated toolchains, tech gates)"
+        - "operations (Deployment, telemetry, monitoring)"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem & Use Case
+      description: What specific pain point or operational gap does this solve?
+      placeholder: "As a security engineer monitoring external perimeters, I need..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution & Architectural Impact
+      description: Describe the intended behavior, API/data design, and how trust boundaries will be preserved.
+      placeholder: "Implement an endpoint `/api/v1/...` and update worker normalization to..."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative implementations, libraries, or workarounds you've explored.
+    validations:
+      required: false
+  - type: checkboxes
+    id: design_checks
+    attributes:
+      label: Architectural Alignment
+      options:
+        - label: "This proposal respects domain-scoped boundaries and does not require unsolicited intrusive scanning or WAF bypass."
+          required: true
+        - label: "This proposal maintains worker isolation (workers do not access database or S3 credentials directly)."
+          required: true

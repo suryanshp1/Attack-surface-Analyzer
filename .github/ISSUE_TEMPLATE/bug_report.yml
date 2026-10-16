@@ -1,0 +1,83 @@
+name: Bug Report
+description: Report a bug, crash, or unexpected behavior in Surfacer.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please do **not** post exploitable vulnerability details, real target credentials, or unredacted evidence here. Consult [SECURITY.md](https://github.com/suryanshp1/attack-surface/blob/main/SECURITY.md) for private reporting.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Subsystem
+      description: Which part of Surfacer is encountering the problem?
+      options:
+        - "web (Next.js App Router, React UI)"
+        - "api (Go API handlers, access control, jobs, leases)"
+        - "worker (Scanner execution, crawling, normalization)"
+        - "gateway (Egress gateway, rate limiter, dial checks)"
+        - "storage (PostgreSQL, MinIO/S3, migrations)"
+        - "scanners (Nuclei, Naabu, Katana, etc.)"
+        - "deploy (Docker Compose, networking, environment setup)"
+        - "other"
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime_environment
+    attributes:
+      label: Execution Environment
+      description: Where is Surfacer running?
+      options:
+        - "Docker Compose (Complete stack)"
+        - "Local Dev (npm run dev + local Go API)"
+        - "Custom Deployment"
+    validations:
+      required: true
+  - type: input
+    id: version_info
+    attributes:
+      label: System & Version Details
+      description: OS version, Docker/Compose version, Node/Go versions, and Git commit hash.
+      placeholder: "e.g., macOS Sequoia 15.2, Docker 27.3.1, Go 1.25.1, Node 22.12.0, commit abc1234"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description & Reproduction Steps
+      description: Clear, step-by-step instructions to reproduce the issue. Use synthetic/dummy domains (e.g. `example.com`), never customer/live targets.
+      placeholder: |
+        1. Start stack with `docker compose up -d`
+        2. Create workspace with domain `example.com`
+        3. Trigger scan with standard profile
+        4. Observe failure in worker logs
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs Actual Behavior
+      description: What did you expect to happen versus what actually occurred?
+      placeholder: "Expected scan stage to complete and save assets; instead worker crashed with exit code..."
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs & Output (Redacted)
+      description: Redact any IP addresses, internal domains, API keys, and sensitive evidence before posting.
+      render: shell
+      placeholder: |
+        # docker compose logs --tail=50 worker api gateway
+    validations:
+      required: false
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight Verification
+      options:
+        - label: "I have confirmed this report contains NO unredacted secrets, credentials, or confidential target evidence."
+          required: true
+        - label: "I have searched existing issues to ensure this is not a duplicate."
+          required: true
