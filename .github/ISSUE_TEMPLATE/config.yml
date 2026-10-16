@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability Report
+    url: https://github.com/suryanshp1/attack-surface/security/policy
+    about: Please report security vulnerabilities privately according to SECURITY.md. Do not post zero-days or unredacted secrets in public issues.
+  - name: Architecture & Scanner Docs
+    url: https://github.com/suryanshp1/attack-surface/tree/main/docs
+    about: Review Surfacer architecture, scanner boundaries, and deployment topology before submitting proposals.

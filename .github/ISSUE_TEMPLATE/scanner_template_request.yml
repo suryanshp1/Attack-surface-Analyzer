@@ -1,0 +1,57 @@
+name: Scanner / Nuclei Template Request
+description: Propose adding or updating an integrated scanner or curated Nuclei template.
+title: "[scanner]: "
+labels: ["scanners"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Surfacer pins scanner versions with sha256 checksums and curates signed templates. Upstream tools and templates must have compatible open-source licenses and safe network footprints.
+  - type: dropdown
+    id: request_type
+    attributes:
+      label: Request Type
+      options:
+        - "Update existing scanner version"
+        - "Propose new open-source scanner"
+        - "Add/update curated Nuclei template"
+    validations:
+      required: true
+  - type: input
+    id: tool_template_name
+    attributes:
+      label: Tool or Template Identifier
+      placeholder: "e.g., projectdiscovery/subfinder v2.6.8 or nuclei/cves/2024/CVE-2024-XXXX"
+    validations:
+      required: true
+  - type: input
+    id: upstream_license
+    attributes:
+      label: Upstream License
+      description: Must be compatible with Surfacer distribution (e.g. Apache-2.0, MIT, BSD).
+      placeholder: "e.g., MIT, Apache-2.0"
+    validations:
+      required: true
+  - type: textarea
+    id: justification
+    attributes:
+      label: Justification & Coverage Benefit
+      description: Explain what detection coverage or efficiency improvement this provides.
+    validations:
+      required: true
+  - type: textarea
+    id: safety_profile
+    attributes:
+      label: Network & Resource Profile
+      description: Detail memory footprint, request rate, egress dial requirements, and verification feasibility within an isolated fixture.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scanner_checks
+    attributes:
+      label: Safety & Policy Verification
+      options:
+        - label: "This tool/template does not perform invasive exploits, credential bruteforcing, or denial-of-service."
+          required: true
+        - label: "I confirm the template/tool can run through the Surfacer egress proxy without requiring direct raw socket host networking."
+          required: true
