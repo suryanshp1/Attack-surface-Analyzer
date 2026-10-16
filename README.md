@@ -14,6 +14,7 @@ Self-hosted external attack surface monitoring for domains you manage. Discover 
 - **Coverage-aware history:** incomplete checks retain prior findings and endpoints instead of treating missing results as resolved.
 - **Self-hosted storage:** PostgreSQL for workspace state and MinIO for evidence, with an isolated worker network and scoped egress gateway.
 - **Responsive workspace:** light, dark, and system appearance; mobile layouts; shareable view state through URL filters.
+- **AI client access:** an authenticated [MCP endpoint](docs/mcp.md) for inventory, findings, scan control, and triage using individual member keys.
 
 Surfacer is under active development. The current deployment supports one workspace and one API process, with scalable workers. See [current limits](#current-limits) before planning a deployment.
 
@@ -141,6 +142,7 @@ Scanner versions and checksum verification live in [the downloader](scripts/fetc
 | [Scanning and coverage](docs/scanning.md) | Scanner profiles, checkpoints, partial results, and lifecycle rules |
 | [Development](docs/development.md) | Local setup, repository layout, and validation commands |
 | [API reference](public/openapi.json) | Routes and roles; served at `/openapi.json` |
+| [MCP integration](docs/mcp.md) | AI client setup, available tools, authentication, and delivery plan |
 | [Contributing](CONTRIBUTING.md) | Bug reports, feature proposals, and pull requests |
 | [Security policy](SECURITY.md) | Vulnerability reporting and supported scope |
 | [Third-party notices](THIRD_PARTY_NOTICES.md) | Bundled tools, templates, and upstream license locations |

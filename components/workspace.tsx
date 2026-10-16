@@ -107,6 +107,7 @@ const statusLabel = (status: string) =>
     ? "Not run"
     : status.charAt(0).toUpperCase() + status.slice(1);
 function scanSummary(scan: Scan) {
+  const pendingStages = scan.stages.filter((s) => s.status !== "completed").length;
   const pendingDetection =
     scan.stages.find((s) => s.name === "Detection")?.status !== "completed";
   if (scan.status === "completed")
@@ -115,6 +116,10 @@ function scanSummary(scan: Scan) {
     return "Assessment in progress. Findings and coverage may change.";
   if (scan.status === "canceled")
     return "Scan canceled. Collected observations are retained.";
+  if (scan.error)
+    return scan.error;
+  if (pendingStages === 0)
+    return "All scan stages completed. Unresponsive hosts were skipped for HTTP checks; existing findings are retained.";
   return `Assessment incomplete. ${pendingDetection ? "Detection did not finish. " : "Some checks did not complete. "}Existing findings are retained.`;
 }
 function probeLabel(asset: Asset) {
@@ -1326,7 +1331,11 @@ function Overview({
         <div>
           <h2>
             {incomplete
-              ? "Assessment incomplete."
+              ? assessmentProblem &&
+                assessmentProblem.stages.length > 0 &&
+                assessmentProblem.stages.every((s) => s.status === "completed")
+                ? "Partial host coverage."
+                : "Assessment incomplete."
               : !latest
                 ? "Start your first assessment."
                 : openCritical
@@ -1335,7 +1344,7 @@ function Overview({
           </h2>
           <p>
             {assessmentProblem
-              ? scanSummary(assessmentProblem).replace(
+              ? (assessmentProblem.error || scanSummary(assessmentProblem)).replace(
                   "Assessment incomplete. ",
                   "",
                 )

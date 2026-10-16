@@ -190,11 +190,12 @@ func (w *Worker) crawl(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 					}
 					if errors.Is(runErr, context.Canceled) {
 						fatalErr = runErr
-					} else if runErr != nil && !errors.Is(runErr, context.DeadlineExceeded) && fatalErr == nil {
-						fatalErr = runErr
+					} else if runErr != nil {
+						issues = append(issues, fmt.Sprintf("%s skipped: %v", seed, runErr))
+						cp.SourceIssues = append(cp.SourceIssues, fmt.Sprintf("Seed %s uncontactable: %v", seed, runErr))
 					}
 					mu.Unlock()
-					if fatalErr != nil || parseErr != nil {
+					if fatalErr != nil {
 						return
 					}
 				}
@@ -203,9 +204,6 @@ func (w *Worker) crawl(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 		wg.Wait()
 		if errors.Is(fatalErr, context.Canceled) {
 			return cp, "Crawl canceled; discoveries retained.", fatalErr
-		}
-		if fatalErr != nil {
-			return cp, strings.Join(issues, "\n"), fatalErr
 		}
 	}
 	refresh()
@@ -279,9 +277,6 @@ func parseCrawlOutput(cp Checkpoint, root string, output []byte) (Checkpoint, er
 			}
 			a.Endpoints = append(a.Endpoints, Endpoint{ID: key, URL: canonical, Method: method, Status: row.Response.StatusCode, Kind: endpointKind(u, row.Request.Tag), Source: "katana", Parameters: params})
 			count++
-			if row.Response.StatusCode == 403 || row.Response.StatusCode == 429 || row.Response.StatusCode == 503 || row.Error != "" {
-				cp.Blocked = append(cp.Blocked, a.Host)
-			}
 			break
 		}
 		for _, form := range row.Response.Forms {
@@ -335,9 +330,22 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 	}
 	transport := &http.Transport{Proxy: http.ProxyURL(p), TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, ResponseHeaderTimeout: 10 * time.Second, TLSHandshakeTimeout: 10 * time.Second}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return errors.New("stopped after 3 redirects")
+			}
+			if !inScope(req.URL.Hostname(), c.Target.Domain) {
+				return errors.New("redirect escaped verified scope")
+			}
+			return nil
+		},
+	}
 	sources := map[string]string{}
 	hosts := map[string]bool{}
+	attempted := map[string]bool{}
 	failed := map[string]bool{}
 	total := 0
 	type jsTask struct {
@@ -389,12 +397,10 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 				defer wg.Done()
 				for t := range taskCh {
 					mu.Lock()
+					attempted[t.host] = true
 					stopTasks := len(sources) >= 100 || total >= 16<<20
 					mu.Unlock()
 					if stopTasks {
-						mu.Lock()
-						failed[t.host] = true
-						mu.Unlock()
 						continue
 					}
 
@@ -406,25 +412,16 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 
 					req, err := http.NewRequestWithContext(ctx, "GET", t.url, nil)
 					if err != nil {
-						mu.Lock()
-						failed[t.host] = true
-						mu.Unlock()
 						continue
 					}
 					req.Header.Set("X-Scanner", "Surfacer/"+c.Scan.ID)
 					req.Header.Set("User-Agent", scannerAgent(c.Scan.ID, "secrets"))
 					res, err := client.Do(req)
 					if err != nil {
-						mu.Lock()
-						failed[t.host] = true
-						mu.Unlock()
 						continue
 					}
 					if res.StatusCode != 200 {
 						res.Body.Close()
-						mu.Lock()
-						failed[t.host] = true
-						mu.Unlock()
 						if res.StatusCode == 403 || res.StatusCode == 429 || res.StatusCode == 503 {
 							reportCooldown(ctx, proxy, t.host, res.StatusCode, res.Header.Get("Retry-After"))
 						}
@@ -433,9 +430,6 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 					body, err := io.ReadAll(io.LimitReader(res.Body, (512<<10)+1))
 					res.Body.Close()
 					if err != nil || len(body) > 512<<10 {
-						mu.Lock()
-						failed[t.host] = true
-						mu.Unlock()
 						continue
 					}
 					name := fingerprint(t.url) + ".js"
@@ -447,8 +441,6 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 						total += len(body)
 						sources[name] = t.url
 						hosts[t.host] = true
-					} else {
-						failed[t.host] = true
 					}
 					mu.Unlock()
 				}
@@ -457,6 +449,11 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 		wg.Wait()
 		if ctx.Err() != nil {
 			return cp, "", ctx.Err()
+		}
+	}
+	for h := range attempted {
+		if !hosts[h] {
+			failed[h] = true
 		}
 	}
 	if len(sources) == 0 {
@@ -498,7 +495,9 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			continue
 		}
 		u, _ := url.Parse(source)
-		cp.Findings = append(cp.Findings, Finding{Host: u.Hostname(), Template: "gitleaks:" + r.RuleID, MatchedAt: source, Title: "Public JavaScript secret: " + capString(r.Description, 200), Severity: "high", Description: "Gitleaks matched a credential pattern in a publicly served JavaScript file. This is a potential secret; validity has not been tested.", Remediation: "Confirm whether the credential is sensitive. Remove it from client-side code, rotate or revoke it, and use server-side credential storage.", Evidence: fmt.Sprintf("URL: %s\nRule: %s\nLine: %d\nSecret: [REDACTED]\nNo credential validation performed.", source, r.RuleID, r.StartLine)})
+		finding := Finding{Host: u.Hostname(), Template: "gitleaks:" + r.RuleID, MatchedAt: source, Title: "Public JavaScript secret: " + capString(r.Description, 200), Severity: "high", Description: "Gitleaks matched a credential pattern in a publicly served JavaScript file. This is a potential secret; validity has not been tested.", Remediation: "Confirm whether the credential is sensitive. Remove it from client-side code, rotate or revoke it, and use server-side credential storage.", Evidence: fmt.Sprintf("URL: %s\nRule: %s\nLine: %d\nSecret: [REDACTED]\nNo credential validation performed.", source, r.RuleID, r.StartLine)}
+		cp.Findings = append(cp.Findings, finding)
+		Log(ctx).Info("finding_discovered", "stage", "JavaScript secrets", "host", finding.Host, "severity", finding.Severity, "template", finding.Template, "title", finding.Title, "matched_at", finding.MatchedAt)
 	}
 	if cp.SecretCoverage == nil {
 		cp.SecretCoverage = map[string][]string{}
@@ -519,7 +518,9 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 		}
 	}
 	for h := range failed {
-		cp.Blocked = append(cp.Blocked, h)
+		if !hosts[h] {
+			cp.Blocked = append(cp.Blocked, h)
+		}
 	}
 	return cp, fmt.Sprintf("Gitleaks analyzed %d public JS files (%d bytes); %d redacted potential credentials; no credential testing. %s", len(sources), total, len(rows), logs), nil
 }

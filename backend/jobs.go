@@ -1045,7 +1045,12 @@ func coverageSummary(cp Checkpoint) string {
 		parts = append(parts, fmt.Sprintf("Crawling remains incomplete for %d services; discoveries retained. Resume scan to continue unfinished seeds.", len(cp.CrawlIncomplete)))
 	}
 	if count := len(coverageBlockers(cp)); count > 0 {
-		parts = append(parts, fmt.Sprintf("%d hosts had failed or incomplete coverage; see stage logs for details.", count))
+		blockers := coverageBlockers(cp)
+		if count <= 3 {
+			parts = append(parts, fmt.Sprintf("%d hosts had failed or incomplete coverage (%s); see stage logs for details.", count, strings.Join(blockers, ", ")))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d hosts had failed or incomplete coverage; see stage logs for details.", count))
+		}
 	}
 	if count := len(excludedHosts(cp)); count > 0 {
 		parts = append(parts, fmt.Sprintf("%d non-public hosts were excluded by scope policy.", count))

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -144,7 +145,10 @@ func (w *Worker) scanPorts(ctx context.Context, c Claim, cp Checkpoint, dir stri
 			}
 		}
 		if runErr != nil && !timedOut {
-			return cp, strings.Join(logs, "\n"), runErr
+			issue := fmt.Sprintf("Naabu port scan failed for batch %v: %v", batch, runErr)
+			cp.SourceIssues = append(cp.SourceIssues, issue)
+			logs = append(logs, issue)
+			incomplete = true
 		}
 		if timedOut {
 			incomplete = true
@@ -217,7 +221,12 @@ func (w *Worker) assessTLS(ctx context.Context, c Claim, cp Checkpoint, dir stri
 	}
 	out, logs, err := command(ctx, "tlsx", []string{"-l", input, "-json", "-silent", "-duc", "-sm", "ctls", "-r", c.DNS, "-proxy", socksProxy(c), "-c", "2", "-timeout", "8", "-retry", "0", "-delay", "500ms", "-tv", "-cipher", "-ex", "-ss", "-mm", "-un"}, "", dir)
 	if err != nil {
-		return cp, logs, err
+		if errors.Is(err, context.Canceled) {
+			return cp, logs, err
+		}
+		issue := fmt.Sprintf("TLSx assessment unavailable: %v", err)
+		cp.SourceIssues = append(cp.SourceIssues, issue)
+		return cp, fmt.Sprintf("TLSx assessment unavailable: %s", logs), nil
 	}
 	count := 0
 	err = jsonLines(out, func(b []byte) error {

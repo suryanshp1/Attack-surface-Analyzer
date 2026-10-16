@@ -209,3 +209,61 @@ func TestParallelJavaScriptDownload(t *testing.T) {
 		t.Fatalf("expected 0 blocked hosts, got: %v", result.Blocked)
 	}
 }
+
+func TestCrawlEndpointErrorDoesNotBlockEntireHost(t *testing.T) {
+	cp := Checkpoint{Assets: []Asset{
+		{Host: "owned.example", URL: "https://owned.example"},
+	}}
+	output := []byte(`{"request":{"endpoint":"https://owned.example/valid1","method":"GET"},"response":{"status_code":200}}
+{"request":{"endpoint":"https://owned.example/broken","method":"GET"},"response":{"status_code":0},"error":"dial timeout"}
+{"request":{"endpoint":"https://owned.example/valid2","method":"GET"},"response":{"status_code":200}}
+`)
+	result, err := parseCrawlOutput(cp, "owned.example", output)
+	if err != nil {
+		t.Fatalf("parseCrawlOutput failed: %v", err)
+	}
+	if len(result.Blocked) != 0 {
+		t.Fatalf("broken individual endpoint should not block entire host, got blocked: %v", result.Blocked)
+	}
+	if len(result.Assets[0].Endpoints) != 3 {
+		t.Fatalf("expected 3 parsed endpoints, got %d", len(result.Assets[0].Endpoints))
+	}
+}
+
+func TestJavaScriptSecretsRedirectOrPartialFailureDoesNotBlockHost(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect.js" {
+			http.Redirect(w, r, "/target.js", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/missing.js" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/javascript")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("console.log('clean');"))
+	}))
+	defer ts.Close()
+
+	endpoints := []Endpoint{
+		{Kind: "JavaScript", URL: "http://owned.example/script1.js"},
+		{Kind: "JavaScript", URL: "http://owned.example/redirect.js"},
+		{Kind: "JavaScript", URL: "http://owned.example/missing.js"},
+	}
+	cp := Checkpoint{Assets: []Asset{
+		{Host: "owned.example", URL: "http://owned.example", Endpoints: endpoints},
+	}}
+	w := Worker{scannerCommand: func(ctx context.Context, name string, args []string, proxy, dir string) ([]byte, string, error) {
+		return []byte("[]"), "", nil
+	}}
+	claim := Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Rate: 20}}
+	result, _, err := w.analyzeJavaScript(context.Background(), claim, cp, ts.URL, t.TempDir())
+	if err != nil {
+		t.Fatalf("analyzeJavaScript failed: %v", err)
+	}
+	if len(result.Blocked) != 0 {
+		t.Fatalf("host with at least one analyzed script should not be marked blocked, got: %v", result.Blocked)
+	}
+}
+

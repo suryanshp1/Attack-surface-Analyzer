@@ -39,10 +39,25 @@ func tokenDigest(value string) string {
 }
 func validRole(role string) bool { return role == "owner" || role == "analyst" || role == "viewer" }
 func (s *Server) actorLocked(r *http.Request) (Actor, bool) {
+	if memberOnly, _ := r.Context().Value(mcpMemberOnlyKey{}).(bool); memberOnly {
+		return s.memberActorLocked(r)
+	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	configured := os.Getenv("API_TOKEN")
 	if configured == "" || subtle.ConstantTimeCompare([]byte(token), []byte(configured)) == 1 {
 		return Actor{"owner", "Workspace owner", "owner"}, true
+	}
+	return s.memberActorLocked(r)
+}
+
+// MCP accepts only revocable member keys, including in unauthenticated dev mode.
+func (s *Server) memberActorLocked(r *http.Request) (Actor, bool) {
+	if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		return Actor{}, false
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !strings.HasPrefix(token, "surf_key_") || len(token) != 73 {
+		return Actor{}, false
 	}
 	hash := tokenDigest(token)
 	for _, key := range s.state.AccessKeys {
