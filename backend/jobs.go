@@ -28,24 +28,28 @@ type RuntimeInfo struct {
 	VerificationRequired bool `json:"verificationRequired"`
 }
 type Checkpoint struct {
-	CrawlIncomplete []string            `json:"crawlIncomplete,omitempty"`
-	CrawlResults    map[string]bool     `json:"crawlResults,omitempty"`
-	PortIncomplete  []string            `json:"portIncomplete,omitempty"`
-	PortResults     map[string][]int    `json:"portResults,omitempty"`
-	History         []Endpoint          `json:"history,omitempty"`
-	SourceIssues    []string            `json:"sourceIssues,omitempty"`
-	ServiceCoverage map[string][]string `json:"serviceCoverage,omitempty"`
-	KnownSecrets    []Finding           `json:"knownSecrets,omitempty"`
-	SecretCoverage  map[string][]string `json:"secretCoverage,omitempty"`
-	Hosts           map[string][]string `json:"hosts,omitempty"`
-	DNS             map[string][]string `json:"dns,omitempty"`
-	Assets          []Asset             `json:"assets,omitempty"`
-	Findings        []Finding           `json:"findings,omitempty"`
-	Covered         []string            `json:"covered,omitempty"`
-	Coverage        map[string][]string `json:"coverage,omitempty"`
-	Templates       []string            `json:"templates,omitempty"`
-	Blocked         []string            `json:"blocked,omitempty"`
-	Known           []string            `json:"known,omitempty"`
+	IncompleteStages map[string]string   `json:"incompleteStages,omitempty"`
+	CrawlIncomplete  []string            `json:"crawlIncomplete,omitempty"`
+	CrawlResults     map[string]bool     `json:"crawlResults,omitempty"`
+	PortIncomplete   []string            `json:"portIncomplete,omitempty"`
+	PortResults      map[string][]int    `json:"portResults,omitempty"`
+	History          []Endpoint          `json:"history,omitempty"`
+	SourceIssues     []string            `json:"sourceIssues,omitempty"`
+	ServiceCoverage  map[string][]string `json:"serviceCoverage,omitempty"`
+	KnownSecrets     []Finding           `json:"knownSecrets,omitempty"`
+	SecretCoverage   map[string][]string `json:"secretCoverage,omitempty"`
+	Hosts            map[string][]string `json:"hosts,omitempty"`
+	DNS              map[string][]string `json:"dns,omitempty"`
+	Assets           []Asset             `json:"assets,omitempty"`
+	Findings         []Finding           `json:"findings,omitempty"`
+	Covered          []string            `json:"covered,omitempty"`
+	Coverage         map[string][]string `json:"coverage,omitempty"`
+	Templates        []string            `json:"templates,omitempty"`
+	Blocked          []string            `json:"blocked,omitempty"`
+	Known            []string            `json:"known,omitempty"`
+	DNSPosture       *DomainDNSPosture   `json:"dnsPosture,omitempty"`
+	Takeovers        []SubdomainTakeover `json:"takeovers,omitempty"`
+	Hazards          []EndpointHazard    `json:"hazards,omitempty"`
 }
 type WorkerInfo struct {
 	ID       string            `json:"id"`
@@ -118,14 +122,7 @@ func (s *Server) publicState() State {
 	for i := range out.AccessKeys {
 		out.AccessKeys[i].Hash = ""
 	}
-	count := 0
-	for _, worker := range s.workers {
-		seen, _ := time.Parse(time.RFC3339, worker.SeenAt)
-		if worker.ID != "egress-gateway" && time.Since(seen) < 30*time.Second {
-			count++
-		}
-	}
-	out.Runtime = RuntimeInfo{s.liveEnabled, count, s.evidence != nil, !s.allowUnverified}
+	out.Runtime = s.publicRuntime()
 	out.Targets = append([]Target{}, s.state.Targets...)
 	for i := range out.Targets {
 		out.Targets[i].CanScan = s.targetCanScan(&out.Targets[i])
@@ -133,23 +130,7 @@ func (s *Server) publicState() State {
 	out.Assets = []Asset{}
 	for _, a := range s.state.Assets {
 		if !a.Removed {
-			a.ProbeStatus = "Not probed"
-			if a.Status > 0 {
-				a.ProbeStatus = "HTTP " + strconv.Itoa(a.Status)
-			} else {
-				for _, port := range a.Ports {
-					if webPort(strconv.Itoa(port)) {
-						a.ProbeStatus = "No HTTP response recorded"
-						break
-					}
-				}
-			}
-			if a.Blocked {
-				a.ProbeStatus = "Probe unavailable"
-			}
-			if ip, err := netip.ParseAddr(a.IP); err == nil && !publicIP(ip) {
-				a.ProbeStatus = "Excluded · non-public address"
-			}
+			a = publicAsset(a)
 			out.Assets = append(out.Assets, a)
 		}
 	}
@@ -159,19 +140,68 @@ func (s *Server) publicState() State {
 	}
 	out.Scans = append([]Scan{}, s.state.Scans...)
 	for i := range out.Scans {
-		sc := &out.Scans[i]
-		sc.Stages = append([]Stage{}, sc.Stages...)
-		reconcileTerminalStages(sc)
-		sc.Coverage = ScanCoverage{len(sc.Checkpoint.CrawlResults), len(sc.Checkpoint.CrawlIncomplete), len(sc.Checkpoint.PortResults), len(sc.Checkpoint.PortIncomplete)}
-		out.Scans[i].ExcludedHosts = excludedHosts(out.Scans[i].Checkpoint)
-		if out.Scans[i].Status == "partial" && strings.Contains(out.Scans[i].Error, "Some hosts were blocked") {
-			out.Scans[i].Error = coverageSummary(out.Scans[i].Checkpoint)
-		}
-		out.Scans[i].Checkpoint = Checkpoint{}
-		out.Scans[i].Lease = ""
-		out.Scans[i].LeaseUntil = ""
+		out.Scans[i] = publicScan(out.Scans[i])
+	}
+	if out.DNSPosture == nil {
+		out.DNSPosture = []DomainDNSPosture{}
+	}
+	if out.Takeovers == nil {
+		out.Takeovers = []SubdomainTakeover{}
+	}
+	if out.Hazards == nil {
+		out.Hazards = []EndpointHazard{}
+	}
+	if out.Webhooks == nil {
+		out.Webhooks = []NotificationWebhook{}
 	}
 	return out
+}
+
+func (s *Server) publicRuntime() RuntimeInfo {
+	count := 0
+	for _, worker := range s.workers {
+		seen, _ := time.Parse(time.RFC3339, worker.SeenAt)
+		if worker.ID != "egress-gateway" && time.Since(seen) < 30*time.Second {
+			count++
+		}
+	}
+	return RuntimeInfo{s.liveEnabled, count, s.evidence != nil, !s.allowUnverified}
+}
+
+func publicAsset(a Asset) Asset {
+	a.ProbeStatus = "Not probed"
+	if a.Status > 0 {
+		a.ProbeStatus = "HTTP " + strconv.Itoa(a.Status)
+	} else {
+		for _, port := range a.Ports {
+			if webPort(strconv.Itoa(port)) {
+				a.ProbeStatus = "No HTTP response recorded"
+				break
+			}
+		}
+	}
+	if a.Blocked {
+		a.ProbeStatus = "Probe unavailable"
+	}
+	if ip, err := netip.ParseAddr(a.IP); err == nil && !publicIP(ip) {
+		a.ProbeStatus = "Excluded · non-public address"
+	}
+	return a
+}
+
+func publicScan(scan Scan) Scan {
+	sc := &scan
+	sc.Stages = append([]Stage{}, sc.Stages...)
+	reconcileTerminalStages(sc)
+	sc.Coverage = ScanCoverage{len(sc.Checkpoint.CrawlResults), len(sc.Checkpoint.CrawlIncomplete), len(sc.Checkpoint.PortResults), len(sc.Checkpoint.PortIncomplete)}
+	scan.ExcludedHosts = excludedHosts(scan.Checkpoint)
+	if scan.Status == "partial" && strings.Contains(scan.Error, "Some hosts were blocked") {
+		scan.Error = coverageSummary(scan.Checkpoint)
+	}
+	scan.Checkpoint = Checkpoint{}
+	scan.Lease = ""
+	scan.LeaseUntil = ""
+	return scan
 }
 
 // Legacy snapshots can have a terminal scan with an active child stage.
@@ -289,9 +319,6 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "Worker authentication required")
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	before, _ := json.Marshal(s.state)
 	var p struct {
 		Worker      string            `json:"worker"`
 		Versions    map[string]string `json:"versions"`
@@ -316,6 +343,12 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 	if len(p.Worker) < 3 || len(p.Worker) > 100 {
 		fail(w, 400, "Worker identity required")
 		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var before []byte
+	if r.URL.Path != "/internal/authorize" && r.URL.Path != "/internal/tcp-authorize" {
+		before, _ = json.Marshal(s.state)
 	}
 	if s.workers == nil {
 		s.workers = map[string]WorkerInfo{}
@@ -343,6 +376,7 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 			respond(w, 200, map[string]any{"scan": nil})
 			return
 		}
+		claimChanged := false
 		for i := range s.state.Scans {
 			sc := &s.state.Scans[i]
 			if sc.Demo || (sc.Status != "queued" && sc.Status != "retrying") {
@@ -361,6 +395,7 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !s.targetCanScan(target) {
+				claimChanged = true
 				sc.Status = "canceled"
 				sc.Error = "Target ownership is not verified"
 				sc.FinishedAt = now()
@@ -401,7 +436,7 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 			respond(w, 200, Claim{*sc, *target, signPermit(Permit{sc.ID, sc.Domain, time.Now().Add(62 * time.Minute).Unix(), sc.Lease}, s.gatewaySecret), proxy, dns})
 			return
 		}
-		if !save() {
+		if claimChanged && !save() {
 			return
 		}
 		respond(w, 200, map[string]any{"scan": nil})
@@ -440,7 +475,8 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sc := &s.state.Scans[index]
-	if sc.Worker != p.Worker || sc.Lease == "" || subtle.ConstantTimeCompare([]byte(sc.Lease), []byte(p.Lease)) != 1 || sc.Status != "running" || s.state.Settings.Paused {
+	leaseUntil, leaseErr := time.Parse(time.RFC3339, sc.LeaseUntil)
+	if leaseErr != nil || !time.Now().Before(leaseUntil) || sc.Worker != p.Worker || sc.Lease == "" || subtle.ConstantTimeCompare([]byte(sc.Lease), []byte(p.Lease)) != 1 || sc.Status != "running" || s.state.Settings.Paused {
 		fail(w, 409, "Lease lost or scan canceled")
 		return
 	}
@@ -460,6 +496,13 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 			if sc.Stages[i].Status == "running" {
 				sc.Stages[i].Status = "pending"
 			}
+		}
+		if sc.Attempts >= 3 {
+			sc.Status = "partial"
+			sc.Error = "Worker execution interrupted three times; resume unfinished checks."
+			sc.FinishedAt = now()
+			reconcileTerminalStages(sc)
+			s.normalize(sc, false)
 		}
 		s.auditActor("Worker released scan", sc.Domain, p.Worker)
 	case "/internal/stage":
@@ -510,9 +553,57 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, err.Error())
 			return
 		}
+		if p.Status == "completed" && s.evidence != nil {
+			data, _ := json.Marshal(p.Checkpoint)
+			// Immutable, lease-specific objects cannot overwrite a replacement worker's evidence.
+			key := "scans/" + sc.ID + "/stage-" + fmt.Sprint(p.Stage) + "-" + fingerprint(sc.Lease, string(data)) + ".json"
+			evidence := s.evidence
+			s.mu.Unlock()
+			putErr := evidence.put(r.Context(), key, data)
+			s.mu.Lock()
+			if putErr != nil {
+				fail(w, 503, "Evidence store unavailable; stage was not committed")
+				return
+			}
+			// State and slice addresses may have changed while storage was busy.
+			sc = nil
+			for i := range s.state.Scans {
+				if s.state.Scans[i].ID == p.ScanID {
+					sc = &s.state.Scans[i]
+					break
+				}
+			}
+			if sc == nil || sc.Status != "running" || sc.Worker != p.Worker || sc.Lease != p.Lease || s.state.Settings.Paused {
+				fail(w, 409, "Lease lost while storing evidence")
+				return
+			}
+			until, e := time.Parse(time.RFC3339, sc.LeaseUntil)
+			var target *Target
+			for i := range s.state.Targets {
+				if s.state.Targets[i].ID == sc.TargetID {
+					target = &s.state.Targets[i]
+					break
+				}
+			}
+			if e != nil || !time.Now().Before(until) || !s.targetCanScan(target) {
+				fail(w, 409, "Scan authorization expired while storing evidence")
+				return
+			}
+			if p.Stage >= len(sc.Stages) {
+				fail(w, 409, "Stage layout changed")
+				return
+			}
+			for _, previous := range sc.Stages[:p.Stage] {
+				if previous.Status != "completed" {
+					fail(w, 409, "Stage order changed")
+					return
+				}
+			}
+			before, _ = json.Marshal(s.state)
+		}
 		if p.Status == "progress" {
-			if sc.Stages[p.Stage].Status != "running" || (sc.Stages[p.Stage].Name != "Port discovery" && sc.Stages[p.Stage].Name != "Endpoint crawling") {
-				fail(w, 409, "Progress requires a running port or crawl stage")
+			if sc.Stages[p.Stage].Status != "running" {
+				fail(w, 409, "Progress requires a running stage")
 				return
 			}
 			sc.Checkpoint = p.Checkpoint
@@ -521,14 +612,7 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		sc.Stages[p.Stage].Log = redact(capString(p.Log, 4000))
 		if p.Status == "completed" {
-			if s.evidence != nil {
-				data, _ := json.Marshal(p.Checkpoint)
-				if err := s.evidence.put(r.Context(), "scans/"+sc.ID+"/stage-"+fmt.Sprint(p.Stage)+".json", data); err != nil {
-					_ = json.Unmarshal(before, &s.state)
-					fail(w, 503, "Evidence store unavailable; stage was not committed")
-					return
-				}
-			}
+
 			sc.Checkpoint = p.Checkpoint
 			sc.Progress = (p.Stage + 1) * 100 / len(sc.Stages)
 			sc.Assets = len(p.Checkpoint.Assets)
@@ -550,6 +634,12 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 			sc.Lease = ""
 			s.audit("Scan stage failed", sc.Domain+" · "+sc.Stages[p.Stage].Name+": "+sc.Error)
 		}
+		// Validated, lease-checked observations become visible as each stage commits.
+		// Resolution still waits for normalize after a complete scan.
+		if p.Status != "running" {
+			s.publishScanFindings(sc, now())
+			s.recountAssetFindings(sc.TargetID)
+		}
 	case "/internal/complete":
 		for _, st := range sc.Stages {
 			if st.Status != "completed" {
@@ -568,7 +658,7 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		sc.Status = "completed"
-		if len(coverageBlockers(sc.Checkpoint)) > 0 || len(sc.Checkpoint.PortIncomplete) > 0 || len(sc.Checkpoint.CrawlIncomplete) > 0 {
+		if len(coverageBlockers(sc.Checkpoint)) > 0 || len(sc.Checkpoint.PortIncomplete) > 0 || len(sc.Checkpoint.CrawlIncomplete) > 0 || len(sc.Checkpoint.IncompleteStages) > 0 {
 			sc.Status = "partial"
 			sc.Error = coverageSummary(sc.Checkpoint)
 		}
@@ -597,6 +687,14 @@ func capString(s string, n int) string {
 	return s
 }
 func validateCheckpoint(cp Checkpoint, root string) error {
+	if len(cp.IncompleteStages) > 20 {
+		return errors.New("Too many incomplete stages")
+	}
+	for stage, issue := range cp.IncompleteStages {
+		if len(stage) > 100 || len(issue) > 1000 {
+			return errors.New("Incomplete stage detail exceeds limits")
+		}
+	}
 	if len(cp.CrawlResults) > 10000 || len(cp.CrawlIncomplete) > 10000 || len(cp.Hosts) > 1000 || len(cp.Assets) > 1000 || len(cp.Findings) > 2000 || len(cp.History) > 2000 {
 		return errors.New("Scan result exceeds limits")
 	}
@@ -689,6 +787,17 @@ func validateCheckpoint(cp Checkpoint, root string) error {
 	for _, h := range cp.Covered {
 		if !inScope(h, root) {
 			return errors.New("Coverage escaped scope")
+		}
+	}
+	for _, to := range cp.Takeovers {
+		if !inScope(to.Subdomain, root) {
+			return errors.New("Takeover candidate escaped scope")
+		}
+	}
+	for _, hz := range cp.Hazards {
+		u, ok := scopedEndpoint(hz.URL, root)
+		if !ok || u == nil {
+			return errors.New("Hazard endpoint escaped scope")
 		}
 	}
 	return nil
@@ -823,45 +932,18 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 			s.emit("asset", "New asset discovered", a.Host, stamp)
 		}
 	}
-	foundIDs := map[string]bool{}
-	for _, f := range sc.Checkpoint.Findings {
-		f.TargetID = sc.TargetID
-		f.ID = fingerprint(sc.TargetID, f.Template, f.Host, f.MatchedAt)
-		f.Evidence = redact(capString(f.Evidence, 16<<10))
-		f.LastSeen = stamp
-		f.FirstSeen = stamp
-		f.Notes = []Note{}
-		f.Status = "open"
-		foundIDs[f.ID] = true
-		found := false
-		for i, old := range s.state.Findings {
-			if old.ID == f.ID {
-				f.FirstSeen = old.FirstSeen
-				f.Notes = old.Notes
-				f.Status = old.Status
-				if old.Status == "resolved" {
-					f.Status = "open"
-					s.emit("finding", "Finding reopened", f.Title+" · "+f.Host, stamp)
-				}
-				s.state.Findings[i] = f
-				found = true
-				break
-			}
-		}
-		if s.evidence != nil {
-			key := sc.TargetID + "/" + f.ID + "/" + sc.ID + ".txt"
-			if err := s.evidence.put(context.Background(), key, []byte(f.Evidence)); err == nil {
-				f.EvidenceKey = key
+	foundIDs := s.publishScanFindings(sc, stamp)
+	if s.evidence != nil {
+		for _, f := range sc.Checkpoint.Findings {
+			findingID := fingerprint(sc.TargetID, f.Template, f.Host, f.MatchedAt)
+			key := sc.TargetID + "/" + findingID + "/" + sc.ID + ".txt"
+			if err := s.evidence.put(context.Background(), key, []byte(redact(capString(f.Evidence, 16<<10)))); err == nil {
 				for i := range s.state.Findings {
-					if s.state.Findings[i].ID == f.ID {
+					if s.state.Findings[i].ID == findingID {
 						s.state.Findings[i].EvidenceKey = key
 					}
 				}
 			}
-		}
-		if !found {
-			s.state.Findings = append(s.state.Findings, f)
-			s.emit("finding", "New "+f.Severity+" exposure", f.Title+" · "+f.Host, stamp)
 		}
 	}
 	if successful {
@@ -898,23 +980,7 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 			}
 		}
 	}
-	for i := range s.state.Assets {
-		a := &s.state.Assets[i]
-		if a.TargetID != sc.TargetID {
-			continue
-		}
-		a.Findings = 0
-		a.Severity = "none"
-		ranks := map[string]int{"none": 5, "info": 4, "low": 3, "medium": 2, "high": 1, "critical": 0}
-		for _, f := range s.state.Findings {
-			if f.Host == a.Host && f.Status == "open" {
-				a.Findings++
-				if ranks[f.Severity] < ranks[a.Severity] {
-					a.Severity = f.Severity
-				}
-			}
-		}
-	}
+	s.recountAssetFindings(sc.TargetID)
 	for i := range s.state.Targets {
 		t := &s.state.Targets[i]
 		if t.ID != sc.TargetID {
@@ -928,10 +994,144 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 			}
 		}
 	}
+
+	// 1. Ingest DNS Governance Posture
+	if sc.Checkpoint.DNSPosture != nil {
+		posture := *sc.Checkpoint.DNSPosture
+		posture.ScanID = sc.ID
+		updated := false
+		for i, old := range s.state.DNSPosture {
+			if old.Domain == posture.Domain {
+				s.state.DNSPosture[i] = posture
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			s.state.DNSPosture = append([]DomainDNSPosture{posture}, s.state.DNSPosture...)
+		}
+	}
+
+	// 2. Ingest Subdomain Takeovers
+	observedTakeovers := map[string]bool{}
+	for _, to := range sc.Checkpoint.Takeovers {
+		to.ScanID = sc.ID
+		toKey := to.Subdomain + "|" + to.ServiceProvider
+		observedTakeovers[toKey] = true
+		found := false
+		for i, old := range s.state.Takeovers {
+			if old.Subdomain == to.Subdomain && old.ServiceProvider == to.ServiceProvider {
+				s.state.Takeovers[i].LastSeen = stamp
+				s.state.Takeovers[i].ScanID = sc.ID
+				s.state.Takeovers[i].CNAME = to.CNAME
+				if old.Status == "resolved" {
+					s.state.Takeovers[i].Status = "open"
+					s.state.Takeovers[i].ReopenCount++
+					s.emit("takeover", "Subdomain takeover returned", to.Subdomain+" · "+to.ServiceProvider, stamp)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			to.FirstSeen = stamp
+			to.LastSeen = stamp
+			to.Status = "open"
+			s.state.Takeovers = append(s.state.Takeovers, to)
+			s.emit("takeover", "Subdomain takeover candidate detected", to.Subdomain+" · "+to.ServiceProvider, stamp)
+		}
+	}
+	if successful {
+		for i := range s.state.Takeovers {
+			old := &s.state.Takeovers[i]
+			if !inScope(old.Subdomain, sc.Domain) || old.Status != "open" {
+				continue
+			}
+			toKey := old.Subdomain + "|" + old.ServiceProvider
+			if !observedTakeovers[toKey] {
+				old.Status = "resolved"
+				s.emit("resolved", "Subdomain takeover resolved", old.Subdomain+" · "+old.ServiceProvider, stamp)
+			}
+		}
+	}
+
+	// 3. Ingest Endpoint Parameter Hazards
+	if len(sc.Checkpoint.Hazards) > 0 {
+		seenHazards := map[string]bool{}
+		for _, h := range s.state.Hazards {
+			seenHazards[h.URL+"|"+h.Parameter+"|"+h.HazardClass] = true
+		}
+		for _, h := range sc.Checkpoint.Hazards {
+			h.ScanID = sc.ID
+			key := h.URL + "|" + h.Parameter + "|" + h.HazardClass
+			if !seenHazards[key] {
+				seenHazards[key] = true
+				s.state.Hazards = append([]EndpointHazard{h}, s.state.Hazards...)
+			}
+		}
+		if len(s.state.Hazards) > 1000 {
+			s.state.Hazards = s.state.Hazards[:1000]
+		}
+	}
+
 	s.emit("scan", "Scan "+sc.Status, sc.Domain+" · "+fmt.Sprint(len(sc.Checkpoint.Assets))+" assets", stamp)
 }
+
+// publishScanFindings upserts observed findings as soon as a validated stage
+// checkpoint commits. It is idempotent and never resolves findings: lifecycle
+// resolution remains in normalize after a complete, successful scan.
+func (s *Server) publishScanFindings(sc *Scan, stamp string) map[string]bool {
+	index := make(map[string]int, len(s.state.Findings))
+	for i, f := range s.state.Findings {
+		index[f.ID] = i
+	}
+	found := map[string]bool{}
+	for _, f := range sc.Checkpoint.Findings {
+		f.TargetID = sc.TargetID
+		f.ID = fingerprint(sc.TargetID, f.Template, f.Host, f.MatchedAt)
+		f.Evidence = redact(capString(f.Evidence, 16<<10))
+		f.FirstSeen, f.LastSeen = stamp, stamp
+		f.Notes, f.Status = []Note{}, "open"
+		found[f.ID] = true
+		if i, ok := index[f.ID]; ok {
+			old := s.state.Findings[i]
+			f.FirstSeen, f.Notes, f.Status, f.EvidenceKey = old.FirstSeen, old.Notes, old.Status, old.EvidenceKey
+			if old.Status == "resolved" {
+				f.Status = "open"
+				s.emit("finding", "Finding reopened", f.Title+" · "+f.Host, stamp)
+			}
+			s.state.Findings[i] = f
+			continue
+		}
+		index[f.ID] = len(s.state.Findings)
+		s.state.Findings = append(s.state.Findings, f)
+		s.emit("finding", "New "+f.Severity+" exposure", f.Title+" · "+f.Host, stamp)
+	}
+	return found
+}
+
+func (s *Server) recountAssetFindings(targetID string) {
+	ranks := map[string]int{"none": 5, "info": 4, "low": 3, "medium": 2, "high": 1, "critical": 0}
+	for i := range s.state.Assets {
+		a := &s.state.Assets[i]
+		if a.TargetID != targetID {
+			continue
+		}
+		a.Findings, a.Severity = 0, "none"
+		for _, f := range s.state.Findings {
+			if f.Host == a.Host && f.Status == "open" {
+				a.Findings++
+				if ranks[f.Severity] < ranks[a.Severity] {
+					a.Severity = f.Severity
+				}
+			}
+		}
+	}
+}
+
 func (s *Server) emit(kind, title, detail, stamp string) {
 	s.state.Events = append([]Event{{id(), kind, title, detail, stamp, "Surfacer"}}, s.state.Events...)
+	s.dispatchWebhooksAsync(kind, title, detail, stamp, append([]NotificationWebhook{}, s.state.Webhooks...))
 }
 func contains(values []string, v string) bool {
 	for _, item := range values {
@@ -1021,6 +1221,14 @@ func excludedHosts(cp Checkpoint) []string {
 }
 func coverageSummary(cp Checkpoint) string {
 	parts := []string{}
+	if len(cp.IncompleteStages) > 0 {
+		names := make([]string, 0, len(cp.IncompleteStages))
+		for name := range cp.IncompleteStages {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		parts = append(parts, "Incomplete stages: "+strings.Join(names, ", ")+". Resume scan to retry unfinished checks.")
+	}
 	candidates, live := false, false
 	for _, a := range cp.Assets {
 		if a.Blocked {
