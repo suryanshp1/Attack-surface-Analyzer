@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -88,14 +88,19 @@ func crawlSeeds(cp Checkpoint) []string {
 	sort.Strings(seeds)
 	return seeds
 }
-func crawlStageTimeout(cp Checkpoint) time.Duration {
+func crawlStageTimeout(cp Checkpoint, scans ...Scan) time.Duration {
 	remaining := 0
 	for _, seed := range crawlSeeds(cp) {
 		if !cp.CrawlResults[seed] {
 			remaining++
 		}
 	}
-	return min(20*time.Minute, max(7*time.Minute, time.Duration(remaining)*110*time.Second+10*time.Second))
+	workers := 1
+	if len(scans) > 0 {
+		workers = min(scanConcurrency(scans[0], 5), max(1, scans[0].Rate))
+	}
+	waves := (remaining + workers - 1) / workers
+	return min(20*time.Minute, max(7*time.Minute, time.Duration(waves)*110*time.Second+10*time.Second))
 }
 func (w *Worker) crawl(ctx context.Context, c Claim, cp Checkpoint, proxy, dir string) (Checkpoint, string, error) {
 	seeds := crawlSeeds(cp)
@@ -135,75 +140,70 @@ func (w *Worker) crawl(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 		}
 	}
 	if len(pending) > 0 {
-		var mu sync.Mutex
-		var fatalErr error
-		workers := min(len(pending), concurrency)
+		type seedResult struct {
+			seed   string
+			output []byte
+			logs   string
+			err    error
+		}
+		workers := min(len(pending), min(concurrency, max(1, c.Scan.Rate)))
 		seedCh := make(chan string, len(pending))
-		for _, s := range pending {
-			seedCh <- s
+		results := make(chan seedResult, workers)
+		for _, seed := range pending {
+			seedCh <- seed
 		}
 		close(seedCh)
-
+		workCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
 		var wg sync.WaitGroup
 		for i := 0; i < workers; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				for seed := range seedCh {
-					if ctx.Err() != nil {
+					if workCtx.Err() != nil {
 						return
 					}
-					if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 110*time.Second {
+					if deadline, ok := workCtx.Deadline(); ok && time.Until(deadline) < 110*time.Second {
 						return
 					}
-					seedCtx, stop := context.WithTimeout(ctx, 110*time.Second)
-					output, logs, runErr := runner(seedCtx, "katana", []string{"-u", seed, "-jsonl", "-silent", "-duc", "-or", "-ob", "-d", "3", "-jc", "-fx", "-ct", "90s", "-mdp", "200", "-iqp", "-kf", "all", "-c", "2", "-p", "1", "-rl", "2", "-timeout", "8", "-retry", "0", "-mrs", "262144", "-s", "breadth-first", "-dr", "-cs", scope, "-cos", `(?i)/(logout|log-out|delete|remove|unsubscribe)(/|\?|$)`, "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "crawl")}, proxy, dir)
+					seedCtx, stop := context.WithTimeout(workCtx, 110*time.Second)
+					output, logs, runErr := runner(seedCtx, "katana", []string{"-u", seed, "-jsonl", "-silent", "-duc", "-or", "-ob", "-d", "3", "-jc", "-fx", "-ct", "90s", "-mdp", "200", "-iqp", "-kf", "all", "-c", strconv.Itoa(max(1, concurrency/workers)), "-p", "1", "-rl", strconv.Itoa(min(2, max(1, c.Scan.Rate/workers))), "-timeout", "8", "-retry", "0", "-mrs", "262144", "-s", "breadth-first", "-dr", "-cs", scope, "-cos", `(?i)/(logout|log-out|delete|remove|unsubscribe)(/|\?|$)`, "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "crawl")}, proxy, dir)
 					stop()
-					if runErr != nil {
-						if n := bytes.LastIndexByte(output, '\n'); n >= 0 {
-							output = output[:n+1]
-						} else {
-							output = nil
-						}
-					}
-					mu.Lock()
-					var parseErr error
-					cp, parseErr = parseCrawlOutput(cp, c.Target.Domain, output)
-					if runErr == nil && parseErr == nil {
-						cp.CrawlResults[seed] = true
-					}
-					refresh()
-					if runErr != nil || parseErr != nil {
-						issues = append(issues, fmt.Sprintf("%s incomplete: %v %v %s", seed, runErr, parseErr, capString(logs, 300)))
-					}
-					if w.API != "" {
-						for stage, st := range c.Scan.Stages {
-							if st.Name != "Endpoint crawling" {
-								continue
-							}
-							payload := w.payload(c.Scan)
-							payload["stage"], payload["status"], payload["checkpoint"] = stage, "progress", cp
-							payload["log"] = fmt.Sprintf("Katana: %d/%d service seeds finished; discoveries checkpointed; %d seeds incomplete.", len(seeds)-len(cp.CrawlIncomplete), len(seeds), len(cp.CrawlIncomplete))
-							_ = w.call(ctx, "/internal/stage", payload, nil)
-							break
-						}
-					}
-					if errors.Is(runErr, context.Canceled) {
-						fatalErr = runErr
-					} else if runErr != nil {
-						issues = append(issues, fmt.Sprintf("%s skipped: %v", seed, runErr))
-						cp.SourceIssues = append(cp.SourceIssues, fmt.Sprintf("Seed %s uncontactable: %v", seed, runErr))
-					}
-					mu.Unlock()
-					if fatalErr != nil {
-						return
-					}
+					// Always drain results, including observations made before cancellation.
+					results <- seedResult{seed, completeScannerRecords(output, runErr), logs, runErr}
 				}
 			}()
 		}
-		wg.Wait()
-		if errors.Is(fatalErr, context.Canceled) {
-			return cp, "Crawl canceled; discoveries retained.", fatalErr
+		go func() { wg.Wait(); close(results) }()
+		var commitErr error
+		for result := range results {
+			var parseErr error
+			cp, parseErr = parseCrawlOutput(cp, c.Target.Domain, result.output)
+			if result.err == nil && parseErr == nil {
+				cp.CrawlResults[result.seed] = true
+			}
+			refresh()
+			if result.err != nil || parseErr != nil {
+				cp.SourceIssues = append(cp.SourceIssues, fmt.Sprintf("Seed %s incomplete: %v", result.seed, errors.Join(result.err, parseErr)))
+				issues = append(issues, fmt.Sprintf("%s incomplete: %v %v %s", result.seed, result.err, parseErr, capString(result.logs, 300)))
+			}
+			if commitErr == nil && ctx.Err() == nil {
+				log := fmt.Sprintf("Katana: %d/%d service seeds finished; %d seeds incomplete.", len(seeds)-len(cp.CrawlIncomplete), len(seeds), len(cp.CrawlIncomplete))
+				commitErr = w.checkpoint(ctx, c, "Endpoint crawling", cp, log)
+				if commitErr != nil {
+					cancel()
+				}
+			}
+		}
+		if ctx.Err() != nil && commitErr == nil {
+			commitErr = w.checkpoint(ctx, c, "Endpoint crawling", cp, "Crawl stopped; observations retained.")
+		}
+		if commitErr != nil {
+			return cp, "Crawl checkpoint failed; observations retained locally.", commitErr
+		}
+		if ctx.Err() != nil {
+			return cp, "Crawl stopped; discoveries retained.", ctx.Err()
 		}
 	}
 	refresh()
@@ -345,8 +345,10 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 	}
 	sources := map[string]string{}
 	hosts := map[string]bool{}
-	attempted := map[string]bool{}
 	failed := map[string]bool{}
+	expected := map[string]int{}
+	downloaded := map[string]int{}
+	seenURLs := map[string]bool{}
 	total := 0
 	type jsTask struct {
 		host string
@@ -364,13 +366,14 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			if _, ok := scopedEndpoint(e.URL, c.Target.Domain); !ok {
 				continue
 			}
-			tasks = append(tasks, jsTask{host: a.Host, url: e.URL})
-			if len(tasks) >= 100 {
-				break
+			if seenURLs[e.URL] {
+				continue
 			}
-		}
-		if len(tasks) >= 100 {
-			break
+			seenURLs[e.URL] = true
+			expected[a.Host]++
+			if len(tasks) < 100 {
+				tasks = append(tasks, jsTask{host: a.Host, url: e.URL})
+			}
 		}
 	}
 
@@ -383,7 +386,7 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 
 	if len(tasks) > 0 {
 		var mu sync.Mutex
-		workers := max(2, min(len(tasks), 6))
+		workers := min(len(tasks), scanConcurrency(c.Scan, 6))
 		taskCh := make(chan jsTask, len(tasks))
 		for _, t := range tasks {
 			taskCh <- t
@@ -397,7 +400,6 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 				defer wg.Done()
 				for t := range taskCh {
 					mu.Lock()
-					attempted[t.host] = true
 					stopTasks := len(sources) >= 100 || total >= 16<<20
 					mu.Unlock()
 					if stopTasks {
@@ -433,14 +435,22 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 						continue
 					}
 					name := fingerprint(t.url) + ".js"
-					if err = os.WriteFile(filepath.Join(jsDir, name), body, 0600); err != nil {
+					mu.Lock()
+					if total+len(body) > 16<<20 || len(sources) >= 100 {
+						mu.Unlock()
 						continue
 					}
+					total += len(body)
+					sources[name] = t.url
+					mu.Unlock()
+					writeErr := os.WriteFile(filepath.Join(jsDir, name), body, 0600)
 					mu.Lock()
-					if total+len(body) <= 16<<20 && len(sources) < 100 {
-						total += len(body)
-						sources[name] = t.url
+					if writeErr != nil {
+						total -= len(body)
+						delete(sources, name)
+					} else {
 						hosts[t.host] = true
+						downloaded[t.host]++
 					}
 					mu.Unlock()
 				}
@@ -451,16 +461,20 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			return cp, "", ctx.Err()
 		}
 	}
-	for h := range attempted {
-		if !hosts[h] {
+	for h, count := range expected {
+		if downloaded[h] < count {
 			failed[h] = true
+			delete(cp.SecretCoverage, h)
 		}
+	}
+	if len(failed) > 0 {
+		setStageIssue(&cp, "JavaScript secrets", fmt.Errorf("JavaScript downloads incomplete for %d hosts; unchecked secret history retained", len(failed)))
 	}
 	if len(sources) == 0 {
 		for h := range failed {
 			cp.Blocked = append(cp.Blocked, h)
 		}
-		return cp, "No public JavaScript files available for secret analysis.", nil
+		return cp, "No public JavaScript files available for secret analysis.", javascriptCoverageError(failed)
 	}
 	report := filepath.Join(dir, "gitleaks.json")
 	runner := command
@@ -507,7 +521,7 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			continue
 		}
 		for _, f := range c.Scan.Checkpoint.KnownSecrets {
-			if f.Host == h {
+			if f.Host == h && sources[fingerprint(f.MatchedAt)+".js"] == f.MatchedAt {
 				cp.SecretCoverage[h] = append(cp.SecretCoverage[h], f.Template)
 			}
 		}
@@ -522,7 +536,7 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			cp.Blocked = append(cp.Blocked, h)
 		}
 	}
-	return cp, fmt.Sprintf("Gitleaks analyzed %d public JS files (%d bytes); %d redacted potential credentials; no credential testing. %s", len(sources), total, len(rows), logs), nil
+	return cp, fmt.Sprintf("Gitleaks analyzed %d public JS files (%d bytes); %d redacted potential credentials; no credential testing. %s", len(sources), total, len(rows), logs), javascriptCoverageError(failed)
 }
 
 // Merge history only after actual successful crawl observations; partial runs retain old endpoints.
@@ -576,4 +590,11 @@ func endpointDelta(previous, current []Endpoint) (added, removed, returned int) 
 		}
 	}
 	return
+}
+
+func javascriptCoverageError(failed map[string]bool) error {
+	if len(failed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("JavaScript downloads incomplete for %d hosts; unchecked secret history retained", len(failed))
 }

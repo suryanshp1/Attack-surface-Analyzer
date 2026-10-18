@@ -36,6 +36,10 @@ type Telemetry struct {
 	gatewayEgressTotal  uint64
 	gatewayBlockedTotal uint64
 	rateLimitStrikes    uint64
+	checkpointWrites    uint64
+	checkpointFailures  uint64
+	checkpointMillis    uint64
+	stageTimeouts       uint64
 
 	// Scan engine metrics
 	stageDurationsSec map[string]*uint64 // stage_name -> cumulative seconds
@@ -135,6 +139,16 @@ func (t *Telemetry) RecordRateLimitStrike() {
 	atomic.AddUint64(&t.rateLimitStrikes, 1)
 }
 
+func (t *Telemetry) RecordCheckpoint(duration time.Duration, failed bool) {
+	atomic.AddUint64(&t.checkpointWrites, 1)
+	atomic.AddUint64(&t.checkpointMillis, uint64(max(0, duration.Milliseconds())))
+	if failed {
+		atomic.AddUint64(&t.checkpointFailures, 1)
+	}
+}
+
+func (t *Telemetry) RecordStageTimeout() { atomic.AddUint64(&t.stageTimeouts, 1) }
+
 func (t *Telemetry) RecordStageDuration(stageName string, duration time.Duration) {
 	secs := uint64(duration.Seconds())
 	if secs == 0 && duration > 0 {
@@ -217,6 +231,11 @@ func (t *Telemetry) WritePrometheus(w io.Writer) {
 			}
 		}
 	}
+
+	fmt.Fprintf(w, "# TYPE surfacer_checkpoint_writes_total counter\nsurfacer_checkpoint_writes_total %d\n", atomic.LoadUint64(&t.checkpointWrites))
+	fmt.Fprintf(w, "# TYPE surfacer_checkpoint_failures_total counter\nsurfacer_checkpoint_failures_total %d\n", atomic.LoadUint64(&t.checkpointFailures))
+	fmt.Fprintf(w, "# TYPE surfacer_checkpoint_duration_seconds summary\nsurfacer_checkpoint_duration_seconds_sum %.3f\nsurfacer_checkpoint_duration_seconds_count %d\n", float64(atomic.LoadUint64(&t.checkpointMillis))/1000, atomic.LoadUint64(&t.checkpointWrites))
+	fmt.Fprintf(w, "# TYPE surfacer_scan_stage_timeouts_total counter\nsurfacer_scan_stage_timeouts_total %d\n", atomic.LoadUint64(&t.stageTimeouts))
 
 	// Runtime metrics
 	var m runtime.MemStats

@@ -46,26 +46,25 @@ func TestNonFatalPortScanBatchFailure(t *testing.T) {
 	_ = logs
 }
 
-func TestNonFatalTLSxFailure(t *testing.T) {
+func TestTLSxFailureRetainsObservationsAndReportsIncomplete(t *testing.T) {
 	cp := Checkpoint{
 		DNS: map[string][]string{
 			"h1.owned.example": {"1.1.1.1"},
 		},
 		Assets: []Asset{
-			{Host: "h1.owned.example", Ports: []int{443}},
+			{Host: "h1.owned.example", Ports: []int{443}, Services: []Service{{URL: "https://h1.owned.example", Port: 443}}},
 		},
 	}
-	w := Worker{}
-	// assessTLS uses command() which executes tlsx; since tlsx is not installed in local test environment,
-	// it fails with exec.LookPath error. Verify it returns nil error and logs to SourceIssues!
-	result, logs, err := w.assessTLS(context.Background(), Claim{DNS: "1.1.1.1:53", Target: Target{Domain: "owned.example"}}, cp, t.TempDir())
-	if err != nil {
-		t.Fatalf("assessTLS returned fatal error: %v", err)
+	w := Worker{scannerCommand: func(context.Context, string, []string, string, string) ([]byte, string, error) {
+		return []byte("{\"host\":\"h1.owned.example\",\"port\":\"443\",\"probe_status\":true,\"tls_version\":\"tls13\"}\n"), "", context.DeadlineExceeded
+	}}
+	result, _, err := w.assessTLS(context.Background(), Claim{Target: Target{Domain: "owned.example"}}, cp, t.TempDir())
+	if !errors.Is(err, context.DeadlineExceeded) || len(result.Assets[0].Services) == 0 || result.Assets[0].Services[0].TLSVersion != "tls13" {
+		t.Fatalf("TLSx failure lost observations or incomplete status: %v %#v", err, result)
 	}
 	if len(result.SourceIssues) == 0 {
 		t.Fatal("expected TLSx failure to be recorded in SourceIssues")
 	}
-	_ = logs
 }
 
 func TestNonFatalKatanaSeedFailure(t *testing.T) {
@@ -163,4 +162,3 @@ func TestWorkerStageContinuation(t *testing.T) {
 		t.Fatal("expected /internal/complete to be called after all stages finished")
 	}
 }
-

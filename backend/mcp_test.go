@@ -91,6 +91,14 @@ func mcpCall(t *testing.T, s *Server, key, name string, args any) map[string]any
 	}
 	return response
 }
+func mcpFailed(response map[string]any) bool {
+	if response["error"] != nil {
+		return true
+	}
+	result, ok := response["result"].(map[string]any)
+	return !ok || result["isError"] == true
+}
+
 func TestMCPToolsPermissionsAndCoverage(t *testing.T) {
 	s, key := mcpFixture(t, "viewer")
 	s.state.Scans = []Scan{{ID: "scan", TargetID: "target-acme", Status: "partial", Lease: "secret-lease", LeaseUntil: "secret-expiry", Checkpoint: Checkpoint{DNS: map[string][]string{"private.example": {"127.0.0.1"}}}}}
@@ -146,12 +154,17 @@ func TestMCPToolsPermissionsAndCoverage(t *testing.T) {
 		t.Fatal("actor audit lost")
 	}
 	bad := mcpCall(t, s, key, "triage_finding", map[string]any{"findingId": "f1", "status": "resolved", "note": "Cannot resolve manually"})
-	if bad["result"].(map[string]any)["isError"] != true {
+	if !mcpFailed(bad) {
 		t.Fatal("manual resolution allowed")
 	}
 	triaged := mcpCall(t, s, key, "triage_finding", map[string]any{"findingId": "f1", "status": "accepted risk", "note": "Documented risk decision"})
 	if triaged["result"].(map[string]any)["isError"] == true {
 		t.Fatal("triage failed", triaged)
+	}
+	for _, finding := range s.state.Findings {
+		if finding.ID == "f1" && finding.Notes[len(finding.Notes)-1].Actor != "Agent" {
+			t.Fatal("triage note lost member identity")
+		}
 	}
 }
 func TestMCPInputBounds(t *testing.T) {
@@ -161,12 +174,12 @@ func TestMCPInputBounds(t *testing.T) {
 		if args["offset"] == int(^uint(0)>>1) {
 			continue
 		} // Huge valid offsets return an empty page without overflow.
-		if result["result"].(map[string]any)["isError"] != true {
+		if !mcpFailed(result) {
 			t.Fatal("invalid page accepted", result)
 		}
 	}
 	result := mcpCall(t, s, key, "cancel_scan", map[string]any{"scanId": "../../settings"})
-	if result["result"].(map[string]any)["isError"] != true {
+	if !mcpFailed(result) {
 		t.Fatal("path traversal accepted")
 	}
 	w := mcpHTTP(s, key, "POST", strings.Repeat(" ", 32769), "")
@@ -199,7 +212,7 @@ func TestMCPRealClient(t *testing.T) {
 	}
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 8 {
+	if err != nil || len(tools.Tools) != 10 {
 		t.Fatalf("discovery: %v %v", tools, err)
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_targets", Arguments: map[string]any{"limit": 1}})

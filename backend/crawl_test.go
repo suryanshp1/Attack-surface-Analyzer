@@ -257,13 +257,12 @@ func TestJavaScriptSecretsRedirectOrPartialFailureDoesNotBlockHost(t *testing.T)
 	w := Worker{scannerCommand: func(ctx context.Context, name string, args []string, proxy, dir string) ([]byte, string, error) {
 		return []byte("[]"), "", nil
 	}}
-	claim := Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Rate: 20}}
+	claim := Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Rate: 20, Concurrency: 3, Checkpoint: Checkpoint{KnownSecrets: []Finding{{Host: "owned.example", Template: "gitleaks:fixture"}}}}}
 	result, _, err := w.analyzeJavaScript(context.Background(), claim, cp, ts.URL, t.TempDir())
-	if err != nil {
-		t.Fatalf("analyzeJavaScript failed: %v", err)
+	if err == nil || len(result.SecretCoverage["owned.example"]) != 0 {
+		t.Fatalf("partial downloads received clean coverage: %v %#v", err, result.SecretCoverage)
 	}
 	if len(result.Blocked) != 0 {
 		t.Fatalf("host with at least one analyzed script should not be marked blocked, got: %v", result.Blocked)
 	}
 }
-

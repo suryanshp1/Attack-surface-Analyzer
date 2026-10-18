@@ -3,7 +3,11 @@ package main
 import "strings"
 
 func emptyState() State {
-	return State{Targets: []Target{}, Assets: []Asset{}, Findings: []Finding{}, Scans: []Scan{}, Events: []Event{}, Audit: []Event{}, Settings: Settings{Name: "My workspace", Rate: 20, Concurrency: 5, Retention: 90}}
+	return State{
+		Targets: []Target{}, Assets: []Asset{}, Findings: []Finding{}, Scans: []Scan{}, Events: []Event{}, Audit: []Event{},
+		DNSPosture: []DomainDNSPosture{}, Takeovers: []SubdomainTakeover{}, Hazards: []EndpointHazard{}, Webhooks: []NotificationWebhook{},
+		Settings: Settings{Name: "My workspace", Rate: 20, Concurrency: 5, Retention: 90},
+	}
 }
 
 // Remove records explicitly marked as legacy samples, preserving real scope.

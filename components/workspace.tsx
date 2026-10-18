@@ -29,11 +29,13 @@ import {
   ExternalLink,
   FileText,
   Fingerprint,
+  Flame,
   Globe2,
   LayoutDashboard,
   ListFilter,
   Loader2,
   LockKeyhole,
+  Mail,
   Menu,
   MoreHorizontal,
   Network,
@@ -75,12 +77,19 @@ import {
   type Page,
 } from "@/lib/workspace-route";
 import type { Endpoint } from "@/lib/types";
+import { TakeoversView } from "@/components/takeovers-view";
+import { GovernanceView } from "@/components/governance-view";
+import { HazardsView } from "@/components/hazards-view";
+import { WebhooksPanel } from "@/components/webhooks-panel";
 
 const navigation = [
   { name: "Overview", icon: LayoutDashboard },
   { name: "Inventory", icon: Network },
   { name: "Endpoints", icon: Code2 },
   { name: "Findings", icon: Shield },
+  { name: "Takeovers", icon: Flame },
+  { name: "Governance", icon: Mail },
+  { name: "Hazards", icon: TriangleAlert },
   { name: "Changes", icon: Activity },
   { name: "Scan activity", icon: Radar },
 ] as const;
@@ -839,13 +848,19 @@ export default function Workspace() {
                       ? "Your application surface."
                       : page === "Findings"
                         ? "Focus on what matters."
-                        : page === "Changes"
-                          ? "Know what changed."
-                          : page === "Scan activity"
-                            ? "Scan activity."
-                            : page === "Targets"
-                              ? "Your target scope."
-                              : "Workspace settings."}
+                        : page === "Takeovers"
+                          ? "Subdomain takeovers."
+                          : page === "Governance"
+                            ? "DNS & email hygiene."
+                            : page === "Hazards"
+                              ? "Endpoint parameter hazards."
+                              : page === "Changes"
+                                ? "Know what changed."
+                                : page === "Scan activity"
+                                  ? "Scan activity."
+                                  : page === "Targets"
+                                    ? "Your target scope."
+                                    : "Workspace settings."}
               </h1>
               <p>
                 {page === "Overview"
@@ -856,13 +871,19 @@ export default function Workspace() {
                       ? "Pages, APIs, forms and JavaScript discovered by Katana."
                       : page === "Findings"
                         ? "Prioritize exposures, review the evidence, and track the fix."
-                        : page === "Changes"
-                          ? "The latest additions, exposures, and improvements across your surface."
-                          : page === "Scan activity"
-                            ? "Follow every stage. Stay in control of every scan."
-                            : page === "Targets"
-                              ? "Choose a domain. Keep its public services in view."
-                              : "A safe, predictable workspace that works the way you do."}
+                        : page === "Takeovers"
+                          ? "Dangling CNAMEs pointing to orphaned cloud resources with known takeover signatures."
+                          : page === "Governance"
+                            ? "Domain authentication hygiene, SPF policy, DMARC alignment, DKIM selectors, and MX configurations."
+                            : page === "Hazards"
+                              ? "Heuristic threat triage on crawled URLs and parameters without active exploitation."
+                              : page === "Changes"
+                                ? "The latest additions, exposures, and improvements across your surface."
+                                : page === "Scan activity"
+                                  ? "Follow every stage. Stay in control of every scan."
+                                  : page === "Targets"
+                                    ? "Choose a domain. Keep its public services in view."
+                                    : "A safe, predictable workspace that works the way you do."}
               </p>
             </div>
             <div className="page-actions">
@@ -1011,6 +1032,25 @@ export default function Workspace() {
                 })
               }
               scopeName={state.targets.find((t) => t.id === scope)?.domain}
+            />
+          )}
+          {page === "Takeovers" && (
+            <TakeoversView
+              takeovers={state.takeovers || []}
+              scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
+              mutate={mutate}
+            />
+          )}
+          {page === "Governance" && (
+            <GovernanceView
+              dnsPosture={state.dnsPosture || []}
+              scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
+            />
+          )}
+          {page === "Hazards" && (
+            <HazardsView
+              hazards={state.hazards || []}
+              scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
             />
           )}
           {page === "Changes" && <Changes events={scopedEvents} />}
@@ -2885,7 +2925,7 @@ function SettingsPage({
   return (
     <>
       <div className="tab-line">
-        {["General", "Scan controls", "Access", "Audit log"].map((t) => (
+        {["General", "Scan controls", "Access", "Webhooks", "Audit log"].map((t) => (
           <button
             key={t}
             className={tab === t ? "tab-active" : ""}
@@ -2897,6 +2937,8 @@ function SettingsPage({
       </div>
       {tab === "Access" ? (
         <AccessPanel state={access} />
+      ) : tab === "Webhooks" ? (
+        <WebhooksPanel webhooks={access.webhooks || []} mutate={mutate} />
       ) : tab === "Audit log" ? (
         <>
           <div className="section-title audit-intro">

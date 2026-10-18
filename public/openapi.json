@@ -449,7 +449,7 @@
     "/scans/{id}/retry": {
       "post": {
         "summary": "Resume partial or failed scan from saved checkpoints",
-        "description": "Minimum role: analyst. Creates a new queued run; completed stages and port batches are retained. Rejects concurrent target scans.",
+        "description": "Minimum role: analyst. Creates a new queued run from the earliest incomplete stage; completed port batches, crawl seeds and confirmed detection services are retained when their upstream inputs remain valid. Rejects concurrent target scans.",
         "parameters": [
           {
             "name": "id",
@@ -482,7 +482,7 @@
       "description": "Stateless MCP Streamable HTTP endpoint on the web service. Requires an active surf_key_ member key; browser sessions and bootstrap/service credentials are rejected. See docs/mcp.md. Internally forwarded to /api/mcp.",
       "post": {
         "summary": "MCP protocol requests and tool calls",
-        "description": "Minimum role: viewer for discovery and reads; analyst or owner for start_scan, cancel_scan, and triage_finding. 32 KiB request limit. API role and scan controls apply to each mutation.",
+        "description": "Minimum role: viewer for discovery and reads; analyst or owner for start_scan, resume_scan, cancel_scan, and triage_finding. get_scan reads one scan; list tools support bounded pagination and applicable status/severity filters. 32 KiB request limit. API role and scan controls apply to each mutation.",
         "requestBody": {
           "required": true,
           "content": {
@@ -495,7 +495,7 @@
         },
         "responses": {
           "200": {
-            "description": "MCP JSON-RPC response; tool failures set result.isError"
+            "description": "MCP JSON-RPC response; schema/protocol failures return a JSON-RPC error and tool execution failures set result.isError"
           },
           "202": {
             "description": "Notification accepted"
@@ -536,6 +536,98 @@
           },
           "401": {
             "description": "Active member access key required"
+          }
+        }
+      }
+    },
+    "/webhooks": {
+      "get": {
+        "summary": "List notification webhooks",
+        "description": "Minimum role: viewer. Returns configured delta notification endpoints.",
+        "responses": {
+          "200": {
+            "description": "List of webhooks"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "summary": "Register a new notification webhook",
+        "description": "Minimum role: owner. Supports slack, discord, and generic webhook formats.",
+        "responses": {
+          "201": {
+            "description": "Webhook registered"
+          },
+          "400": {
+            "description": "Invalid URL or configuration"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Role denied"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove a notification webhook",
+        "description": "Minimum role: owner. Removes webhook by query parameter id.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook removed"
+          },
+          "404": {
+            "description": "Webhook not found"
+          }
+        }
+      }
+    },
+    "/webhooks/test": {
+      "post": {
+        "summary": "Dispatch a test payload to a webhook",
+        "description": "Minimum role: owner. Dispatches a non-blocking test event to the specified webhook.",
+        "responses": {
+          "200": {
+            "description": "Test notification delivered"
+          },
+          "502": {
+            "description": "Target endpoint failed or timed out"
+          }
+        }
+      }
+    },
+    "/takeovers/{id}": {
+      "patch": {
+        "summary": "Triage subdomain takeover status",
+        "description": "Minimum role: analyst. Update status to open, suppressed, or resolved.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status updated"
+          },
+          "404": {
+            "description": "Takeover not found"
           }
         }
       }

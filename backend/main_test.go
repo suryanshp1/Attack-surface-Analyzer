@@ -235,3 +235,102 @@ func TestKillSwitchCancelsAllActiveScans(t *testing.T) {
 		t.Fatal("canceled job resumed")
 	}
 }
+
+func TestWebhooksCRUD(t *testing.T) {
+	s := testServer(t)
+	w := request(s, "POST", "/api/webhooks", `{"url":"https://hooks.slack.com/services/test","webhookType":"slack"}`)
+	if w.Code != 201 {
+		t.Fatalf("webhook create failed: %d %s", w.Code, w.Body.String())
+	}
+	var wh NotificationWebhook
+	_ = json.Unmarshal(w.Body.Bytes(), &wh)
+	if wh.ID == "" || wh.WebhookType != "slack" || !wh.Enabled {
+		t.Fatalf("unexpected webhook data: %+v", wh)
+	}
+
+	// List
+	w = request(s, "GET", "/api/webhooks", "")
+	if w.Code != 200 {
+		t.Fatalf("webhook list failed: %d", w.Code)
+	}
+	var list []NotificationWebhook
+	_ = json.Unmarshal(w.Body.Bytes(), &list)
+	if len(list) != 1 || list[0].ID != wh.ID {
+		t.Fatalf("unexpected list: %+v", list)
+	}
+
+	// Delete
+	w = request(s, "DELETE", "/api/webhooks?id="+wh.ID, "")
+	if w.Code != 200 {
+		t.Fatalf("webhook delete failed: %d", w.Code)
+	}
+	if len(s.state.Webhooks) != 0 {
+		t.Fatal("webhook was not removed")
+	}
+}
+
+func TestTakeoverTriageAPI(t *testing.T) {
+	s := testServer(t)
+	s.state.Takeovers = []SubdomainTakeover{
+		{
+			ID:              "to-1",
+			Subdomain:       "sub.company.com",
+			CNAME:           "test.s3.amazonaws.com",
+			ServiceProvider: "AWS S3",
+			Status:          "open",
+		},
+	}
+	w := request(s, "PATCH", "/api/takeovers/to-1", `{"status":"suppressed"}`)
+	if w.Code != 200 {
+		t.Fatalf("takeover triage failed: %d %s", w.Code, w.Body.String())
+	}
+	if s.state.Takeovers[0].Status != "suppressed" {
+		t.Fatalf("status not updated: %s", s.state.Takeovers[0].Status)
+	}
+}
+
+func TestNormalizeIngestsPostureAndTakeovers(t *testing.T) {
+	s := testServer(t)
+	s.state.Targets = []Target{{ID: "t-1", Domain: "company.com"}}
+	sc := Scan{
+		ID:       "sc-1",
+		TargetID: "t-1",
+		Domain:   "company.com",
+		Status:   "completed",
+		Checkpoint: Checkpoint{
+			DNSPosture: &DomainDNSPosture{
+				Domain:      "company.com",
+				SPFRecord:   "v=spf1 -all",
+				SPFStatus:   "secure",
+				DMARCRecord: "v=DMARC1; p=reject",
+				DMARCPolicy: "reject",
+			},
+			Takeovers: []SubdomainTakeover{
+				{
+					Subdomain:       "orphaned.company.com",
+					CNAME:           "orphan.herokudns.com",
+					ServiceProvider: "Heroku",
+				},
+			},
+			Hazards: []EndpointHazard{
+				{
+					URL:         "https://company.com/redirect?next=login",
+					Parameter:   "next",
+					HazardClass: "redirect_candidate",
+					Severity:    "medium",
+				},
+			},
+		},
+	}
+	s.normalize(&sc, true)
+	if len(s.state.DNSPosture) != 1 || s.state.DNSPosture[0].SPFStatus != "secure" {
+		t.Fatalf("dns posture not normalized: %+v", s.state.DNSPosture)
+	}
+	if len(s.state.Takeovers) != 1 || s.state.Takeovers[0].Subdomain != "orphaned.company.com" {
+		t.Fatalf("takeovers not normalized: %+v", s.state.Takeovers)
+	}
+	if len(s.state.Hazards) != 1 || s.state.Hazards[0].Parameter != "next" {
+		t.Fatalf("hazards not normalized: %+v", s.state.Hazards)
+	}
+}
+
