@@ -293,3 +293,32 @@ func streamLines(r io.Reader, maxLine int, onLine func([]byte) error) (dropped i
 		return dropped, err
 	}
 }
+
+// Three processes saturate the per-root gateway budget; more only adds template
+// load cost and memory.
+func detectionWorkers(sc Scan) int { return min(scanConcurrency(sc, 3), max(1, sc.Rate)) }
+
+// nucleiParallelism splits the scan budget so aggregate requests/s across all
+// nuclei processes is <= Scan.Rate and aggregate in-flight work is <= Scan.Concurrency.
+func nucleiParallelism(sc Scan, workers, templates int) (rate, templateConc, hostConc int) {
+	workers = max(1, workers)
+	rate = max(1, sc.Rate/workers)
+	perWorker := max(1, scanConcurrency(sc, 10)/workers)
+	templateConc = max(1, min(templates, 2, perWorker))
+	hostConc = max(1, perWorker/templateConc)
+	return rate, templateConc, hostConc
+}
+
+// One process per worker amortizes template parsing/signature checks; the cap
+// bounds the coverage lost if a single batch is killed.
+func splitDetectionBatches(urls []string, workers int) [][]string {
+	if len(urls) == 0 {
+		return nil
+	}
+	size := min(50, max(5, (len(urls)+max(1, workers)-1)/max(1, workers)))
+	var out [][]string
+	for i := 0; i < len(urls); i += size {
+		out = append(out, urls[i:min(i+size, len(urls))])
+	}
+	return out
+}

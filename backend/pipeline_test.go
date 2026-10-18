@@ -265,9 +265,9 @@ func TestDetectionBatchesResumeConfirmedCoverage(t *testing.T) {
 		ids[entry.File] = entry.ID
 	}
 	var active, peak, calls atomic.Int32
-	started := make(chan struct{}, 2)
+	started := make(chan struct{}, 3)
 	release := make(chan struct{})
-	go func() { <-started; <-started; close(release) }()
+	go func() { <-started; <-started; <-started; close(release) }()
 	var seenMu sync.Mutex
 	seen := map[string]bool{}
 	firstPass := true
@@ -299,7 +299,7 @@ func TestDetectionBatchesResumeConfirmedCoverage(t *testing.T) {
 		concurrency, _ := strconv.Atoi(flags["-bs"])
 		maxRate, maxConcurrency := 6, 4
 		if firstPass {
-			maxRate, maxConcurrency = 3, 2
+			maxRate, maxConcurrency = 2, 1
 		}
 		if rate > maxRate || concurrency > maxConcurrency {
 			return nil, "", fmt.Errorf("aggregate scanner limits exceeded")
@@ -309,7 +309,7 @@ func TestDetectionBatchesResumeConfirmedCoverage(t *testing.T) {
 			return nil, "", e
 		}
 		urls := strings.Fields(string(input))
-		if len(urls) > 10 {
+		if len(urls) > 50 {
 			return nil, "", errors.New("unbounded detection batch")
 		}
 		var output []byte
@@ -335,14 +335,38 @@ func TestDetectionBatchesResumeConfirmedCoverage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cp, _, err = w.detect(ctx, claim, cp, "", t.TempDir())
-	if err == nil || peak.Load() != 2 || len(cp.ServiceCoverage) != 16 || calls.Load() != 3 {
+	if err == nil || peak.Load() != 3 || len(cp.ServiceCoverage) != 17 || calls.Load() != 3 {
 		t.Fatal("partial batch coverage incorrect", err, peak.Load(), len(cp.ServiceCoverage), calls.Load())
 	}
 	firstPass = false
 	seen = map[string]bool{}
 	cp, _, err = w.detect(ctx, claim, cp, "", t.TempDir())
-	if err != nil || len(cp.ServiceCoverage) != 25 || len(seen) != 9 || seen["https://h00.owned.example"] {
+	if err != nil || len(cp.ServiceCoverage) != 25 || len(seen) != 8 || seen["https://h00.owned.example"] {
 		t.Fatal("resume repeated confirmed services or lost coverage", err, len(cp.ServiceCoverage), seen)
+	}
+}
+
+func TestNucleiParallelismStaysWithinScanBudget(t *testing.T) {
+	for _, sc := range []Scan{{Rate: 1, Concurrency: 1}, {Rate: 6, Concurrency: 4}, {Rate: 20, Concurrency: 5}, {Rate: 30, Concurrency: 10}} {
+		workers := detectionWorkers(sc)
+		rate, c, bs := nucleiParallelism(sc, workers, 7)
+		if workers*rate > sc.Rate || workers*c*bs > max(workers, sc.Concurrency) || c < 1 || bs < 1 {
+			t.Fatal("aggregate scanner budget exceeded", sc, workers, rate, c, bs)
+		}
+	}
+}
+
+func TestSplitDetectionBatches(t *testing.T) {
+	urls := make([]string, 25)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("https://h%02d.owned.example", i)
+	}
+	batches := splitDetectionBatches(urls, 3)
+	if len(batches) != 3 || len(batches[0]) != 9 || len(batches[2]) != 7 {
+		t.Fatal(len(batches), batches)
+	}
+	if got := splitDetectionBatches(make([]string, 400), 3); len(got[0]) != 50 {
+		t.Fatal("batch size not capped", len(got[0]))
 	}
 }
 

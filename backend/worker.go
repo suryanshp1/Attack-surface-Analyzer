@@ -984,30 +984,18 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 			cp.Coverage[a.Host] = append(cp.Coverage[a.Host], "tls-expiry")
 		}
 	}
-	cp.Templates = []string{}
+	techFiles := map[string][]string{}
+	techIDs := map[string][]string{}
+	for _, t := range manifest.Templates {
+		techFiles[t.Technology] = append(techFiles[t.Technology], filepath.Join(w.Templates, t.File))
+		techIDs[t.Technology] = append(techIDs[t.Technology], t.ID)
+	}
+
 	groups := map[string][]string{}
-	paths := map[string][]string{}
+	required := map[string][]string{}
+
 	for _, a := range cp.Assets {
 		if a.URL == "" || a.Blocked {
-			continue
-		}
-		files := []string{}
-		ids := []string{}
-		for _, t := range manifest.Templates {
-			match := t.Technology == ""
-			for _, tech := range a.Technologies {
-				if strings.EqualFold(tech, t.Technology) {
-					match = true
-				}
-			}
-			if match {
-				files = append(files, filepath.Join(w.Templates, t.File))
-				ids = append(ids, t.ID)
-				cp.Templates = append(cp.Templates, t.ID)
-			}
-		}
-		key := strings.Join(files, ",")
-		if key == "" {
 			continue
 		}
 		services := a.Services
@@ -1018,9 +1006,45 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 			if svc.Status == 403 || svc.Status == 429 || svc.Status >= 500 {
 				continue
 			}
-			groups[key] = append(groups[key], svc.URL)
+			origin := serviceOrigin(svc.URL)
+			if len(techFiles[""]) > 0 {
+				groups[""] = append(groups[""], svc.URL)
+				required[origin] = append(required[origin], techIDs[""]...)
+			}
+			for tech, fList := range techFiles {
+				if tech == "" || len(fList) == 0 {
+					continue
+				}
+				match := false
+				for _, aTech := range a.Technologies {
+					if strings.EqualFold(aTech, tech) {
+						match = true
+						break
+					}
+				}
+				if match {
+					groups[tech] = append(groups[tech], svc.URL)
+					required[origin] = append(required[origin], techIDs[tech]...)
+				}
+			}
 		}
-		paths[key] = ids
+	}
+
+	for origin := range required {
+		required[origin] = dedupeStrings(required[origin])
+	}
+
+	cp.Templates = []string{}
+	for tech := range groups {
+		cp.Templates = append(cp.Templates, techIDs[tech]...)
+	}
+	cp.Templates = dedupeStrings(cp.Templates)
+
+	type nucleiRecord struct {
+		template string
+		origin   string
+		host     string
+		finding  *Finding
 	}
 	type detectionBatch struct {
 		templates          string
@@ -1028,35 +1052,44 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 		index              int
 	}
 	type detectionResult struct {
-		batch  detectionBatch
-		output []byte
-		logs   string
-		err    error
+		batch   detectionBatch
+		records []nucleiRecord
+		logs    string
+		err     error
 	}
+
 	keys := make([]string, 0, len(groups))
 	for key := range groups {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+
+	workers := detectionWorkers(c.Scan)
 	var batches []detectionBatch
-	for _, templates := range keys {
-		urls := dedupeStrings(groups[templates])
+	for _, tech := range keys {
+		urls := dedupeStrings(groups[tech])
 		sort.Strings(urls)
 		var pending []string
 		for _, raw := range urls {
-			if !serviceTemplatesCovered(cp, serviceOrigin(raw), paths[templates]) {
+			if !serviceTemplatesCovered(cp, serviceOrigin(raw), techIDs[tech]) {
 				pending = append(pending, raw)
 			}
 		}
-		for offset := 0; offset < len(pending); offset += 10 {
-			urls := pending[offset:min(offset+10, len(pending))]
-			origins := make([]string, 0, len(urls))
-			for _, raw := range urls {
+		for _, batchURLs := range splitDetectionBatches(pending, workers) {
+			origins := make([]string, 0, len(batchURLs))
+			for _, raw := range batchURLs {
 				origins = append(origins, serviceOrigin(raw))
 			}
-			batches = append(batches, detectionBatch{templates, urls, origins, paths[templates], len(batches)})
+			batches = append(batches, detectionBatch{
+				templates: strings.Join(techFiles[tech], ","),
+				urls:      batchURLs,
+				origins:   origins,
+				ids:       techIDs[tech],
+				index:     len(batches),
+			})
 		}
 	}
+
 	findingKeys := map[string]bool{}
 	for _, f := range cp.Findings {
 		findingKeys[fingerprint(f.Host, f.Template, f.MatchedAt)] = true
@@ -1064,13 +1097,15 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 	logs := []string{}
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	workers := min(len(batches), min(scanConcurrency(c.Scan, 2), max(1, c.Scan.Rate)))
+
+	workers = min(len(batches), workers)
 	jobs := make(chan detectionBatch, len(batches))
-	results := make(chan detectionResult, max(workers, 1))
+	results := make(chan detectionResult, max(len(batches), 1))
 	for _, batch := range batches {
 		jobs <- batch
 	}
 	close(jobs)
+
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -1091,98 +1126,150 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 					results <- detectionResult{batch: batch, err: e}
 					continue
 				}
-				batchCtx, stop := context.WithTimeout(workCtx, detectionBatchBudget(len(batch.urls), len(batch.ids), max(1, c.Scan.Rate/workers)))
-				output, logText, e := w.runScanner(batchCtx, "nuclei", []string{"-l", input, "-t", batch.templates, "-jsonl", "-silent", "-duc", "-disable-unsigned-templates", "-etags", "dos,intrusive,fuzz,bruteforce", "-no-interactsh", "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "detection"), "-rl", strconv.Itoa(max(1, c.Scan.Rate/workers)), "-c", "1", "-pc", "1", "-bs", strconv.Itoa(max(1, scanConcurrency(c.Scan, 10)/workers)), "-timeout", "10", "-retries", "1", "-response-size-read", "65536", "-include-rr", "-matcher-status"}, proxy, batchDir)
+				rate, tc, hc := nucleiParallelism(c.Scan, workers, len(batch.ids))
+				args := []string{
+					"-l", input,
+					"-t", batch.templates,
+					"-jsonl",
+					"-silent",
+					"-duc",
+					"-disable-unsigned-templates",
+					"-etags", "dos,intrusive,fuzz,bruteforce",
+					"-no-interactsh",
+					"-proxy", proxy,
+					"-H", "X-Scanner: Surfacer/" + c.Scan.ID,
+					"-H", "User-Agent: " + scannerAgent(c.Scan.ID, "detection"),
+					"-rl", strconv.Itoa(rate),
+					"-c", strconv.Itoa(tc),
+					"-pc", "1",
+					"-bs", strconv.Itoa(hc),
+					"-mhe", "5",
+					"-timeout", "10",
+					"-retries", "1",
+					"-response-size-read", "65536",
+					"-include-rr",
+					"-matcher-status",
+				}
+				batchCtx, stop := context.WithTimeout(workCtx, detectionBatchBudget(len(batch.urls), len(batch.ids), rate))
+				batchStart := time.Now()
+				var records []nucleiRecord
+				logText, runErr := w.runScannerStream(batchCtx, "nuclei", args, proxy, batchDir, func(b []byte) error {
+					var r struct {
+						Template      string `json:"template-id"`
+						Host          string `json:"host"`
+						Matched       string `json:"matched-at"`
+						URL           string `json:"url"`
+						Request       string `json:"request"`
+						Response      string `json:"response"`
+						MatcherStatus *bool  `json:"matcher-status"`
+						Error         string `json:"error"`
+						Info          struct {
+							Name        string `json:"name"`
+							Severity    string `json:"severity"`
+							Description string `json:"description"`
+							Remediation string `json:"remediation"`
+						} `json:"info"`
+					}
+					if err := json.Unmarshal(b, &r); err != nil {
+						return err
+					}
+					value := r.Matched
+					if value == "" {
+						value = r.URL
+						if value == "" {
+							value = r.Host
+						}
+						if !strings.Contains(value, "://") {
+							value = "http://" + value
+						}
+					}
+					u, err := url.Parse(value)
+					if err != nil || !inScope(u.Hostname(), c.Target.Domain) || !contains(batch.ids, r.Template) || !contains(batch.origins, serviceOrigin(value)) {
+						return nil
+					}
+					if r.Error != "" || r.Response == "" || strings.Contains(r.Response, " 429 ") || strings.Contains(r.Response, " 503 ") {
+						return nil
+					}
+					rec := nucleiRecord{template: r.Template, origin: serviceOrigin(value), host: u.Hostname()}
+					if r.MatcherStatus != nil && *r.MatcherStatus {
+						evidence := redact(capString(r.Request+"\n\n"+r.Response, 16<<10))
+						for _, entry := range manifest.Templates {
+							if entry.ID == r.Template && entry.MetadataOnly {
+								evidence = fmt.Sprintf("Nuclei matched %s at %s. Sensitive response body omitted from stored evidence.", r.Template, value)
+							}
+						}
+						rec.finding = &Finding{
+							Template:    r.Template,
+							Host:        u.Hostname(),
+							MatchedAt:   r.Matched,
+							Title:       capString(r.Info.Name, 300),
+							Severity:    r.Info.Severity,
+							Description: capString(r.Info.Description, 2000),
+							Remediation: capString(r.Info.Remediation, 2000),
+							Evidence:    evidence,
+						}
+					}
+					records = append(records, rec)
+					return nil
+				})
 				stop()
 				os.RemoveAll(batchDir)
-				results <- detectionResult{batch, output, logText, e}
+				batchDur := time.Since(batchStart)
+				errStr := ""
+				if runErr != nil {
+					errStr = runErr.Error()
+				}
+				Log(workCtx).Info("nuclei_batch_completed", "scan_id", c.Scan.ID, "batch", batch.index, "urls", len(batch.urls), "templates", len(batch.ids), "records", len(records), "duration_ms", batchDur.Milliseconds(), "err", errStr)
+				results <- detectionResult{batch: batch, records: records, logs: logText, err: runErr}
 			}
 		}()
 	}
 	go func() { wg.Wait(); close(results) }()
+
 	var stageErr, commitErr error
+	lastCommit := time.Now()
 	for result := range results {
 		logs = append(logs, result.logs)
-		parseErr := jsonLines(completeScannerRecords(result.output, result.err), func(b []byte) error {
-			var r struct {
-				Template      string `json:"template-id"`
-				Host          string `json:"host"`
-				Matched       string `json:"matched-at"`
-				URL           string `json:"url"`
-				Request       string `json:"request"`
-				Response      string `json:"response"`
-				MatcherStatus *bool  `json:"matcher-status"`
-				Error         string `json:"error"`
-				Info          struct {
-					Name        string `json:"name"`
-					Severity    string `json:"severity"`
-					Description string `json:"description"`
-					Remediation string `json:"remediation"`
-				} `json:"info"`
-			}
-			if err := json.Unmarshal(b, &r); err != nil {
-				return err
-			}
-			value := r.Matched
-			if value == "" {
-				value = r.URL
-				if value == "" {
-					value = r.Host
+		newFindingsInBatch := 0
+		for _, rec := range result.records {
+			cp.ServiceCoverage[rec.origin] = append(cp.ServiceCoverage[rec.origin], rec.template)
+			cp.Coverage[rec.host] = append(cp.Coverage[rec.host], rec.template)
+			if rec.finding != nil {
+				if len(cp.Findings) >= 2000 {
+					stageErr = errors.Join(stageErr, errors.New("finding cap exceeded"))
+					continue
 				}
-				if !strings.Contains(value, "://") {
-					value = "http://" + value
+				key := fingerprint(rec.finding.Host, rec.finding.Template, rec.finding.MatchedAt)
+				if !findingKeys[key] {
+					findingKeys[key] = true
+					cp.Findings = append(cp.Findings, *rec.finding)
+					newFindingsInBatch++
+					Log(ctx).Info("finding_discovered", "stage", "Detection", "host", rec.finding.Host, "severity", rec.finding.Severity, "template", rec.finding.Template, "title", rec.finding.Title, "matched_at", rec.finding.MatchedAt)
 				}
 			}
-			u, err := url.Parse(value)
-			if err != nil || !inScope(u.Hostname(), c.Target.Domain) || !contains(result.batch.ids, r.Template) || !contains(result.batch.origins, serviceOrigin(value)) {
-				return nil
-			}
-			if r.Error != "" || r.Response == "" || strings.Contains(r.Response, " 429 ") || strings.Contains(r.Response, " 503 ") {
-				return nil
-			}
-			cp.ServiceCoverage[serviceOrigin(value)] = append(cp.ServiceCoverage[serviceOrigin(value)], r.Template)
-			cp.Coverage[u.Hostname()] = append(cp.Coverage[u.Hostname()], r.Template)
-			if r.MatcherStatus == nil || !*r.MatcherStatus {
-				return nil
-			}
-			if len(cp.Findings) >= 2000 {
-				return errors.New("finding cap exceeded")
-			}
-			evidence := redact(capString(r.Request+"\n\n"+r.Response, 16<<10))
-			for _, entry := range manifest.Templates {
-				if entry.ID == r.Template && entry.MetadataOnly {
-					evidence = fmt.Sprintf("Nuclei matched %s at %s. Sensitive response body omitted from stored evidence.", r.Template, value)
-				}
-			}
-			finding := Finding{Template: r.Template, Host: u.Hostname(), MatchedAt: r.Matched, Title: capString(r.Info.Name, 300), Severity: r.Info.Severity, Description: capString(r.Info.Description, 2000), Remediation: capString(r.Info.Remediation, 2000), Evidence: evidence}
-			key := fingerprint(finding.Host, finding.Template, finding.MatchedAt)
-			if findingKeys[key] {
-				return nil
-			}
-			findingKeys[key] = true
-			cp.Findings = append(cp.Findings, finding)
-			Log(ctx).Info("finding_discovered", "stage", "Detection", "host", finding.Host, "severity", finding.Severity, "template", finding.Template, "title", finding.Title, "matched_at", finding.MatchedAt)
-			return nil
-		})
-		if result.err != nil || parseErr != nil {
-			stageErr = errors.Join(stageErr, fmt.Errorf("Nuclei batch %d incomplete: %w", result.batch.index, errors.Join(result.err, parseErr)))
 		}
-		if commitErr == nil {
+		if result.err != nil {
+			stageErr = errors.Join(stageErr, fmt.Errorf("Nuclei batch %d incomplete: %w", result.batch.index, result.err))
+		}
+		if commitErr == nil && (newFindingsInBatch > 0 || time.Since(lastCommit) >= 15*time.Second) {
 			commitErr = w.checkpoint(ctx, c, "Detection", cp, "Nuclei batch observations checkpointed; coverage tracked per service and template.")
+			lastCommit = time.Now()
 			if commitErr != nil {
 				cancel()
 			}
 		}
 	}
+
 	missing := 0
-	for templates, urls := range groups {
-		for _, raw := range dedupeStrings(urls) {
-			u, _ := url.Parse(raw)
-			if serviceTemplatesCovered(cp, serviceOrigin(raw), paths[templates]) {
-				cp.Covered = append(cp.Covered, u.Hostname())
-			} else {
-				missing++
-			}
+	for origin, reqTemplates := range required {
+		u, err := url.Parse(origin)
+		if err != nil {
+			continue
+		}
+		if serviceTemplatesCovered(cp, origin, reqTemplates) {
+			cp.Covered = append(cp.Covered, u.Hostname())
+		} else {
+			missing++
 		}
 	}
 	cp.Covered = dedupeStrings(cp.Covered)
