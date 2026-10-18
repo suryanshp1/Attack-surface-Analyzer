@@ -509,7 +509,19 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			continue
 		}
 		u, _ := url.Parse(source)
-		finding := Finding{Host: u.Hostname(), Template: "gitleaks:" + r.RuleID, MatchedAt: source, Title: "Public JavaScript secret: " + capString(r.Description, 200), Severity: "high", Description: "Gitleaks matched a credential pattern in a publicly served JavaScript file. This is a potential secret; validity has not been tested.", Remediation: "Confirm whether the credential is sensitive. Remove it from client-side code, rotate or revoke it, and use server-side credential storage.", Evidence: fmt.Sprintf("URL: %s\nRule: %s\nLine: %d\nSecret: [REDACTED]\nNo credential validation performed.", source, r.RuleID, r.StartLine)}
+		finding := Finding{
+			Host:        u.Hostname(),
+			Template:    "gitleaks:" + r.RuleID,
+			MatchedAt:   source,
+			Title:       "Public JavaScript secret: " + capString(r.Description, 200),
+			Severity:    "high",
+			Description: "Gitleaks matched a credential pattern in a publicly served JavaScript file. This is a potential secret; validity has not been tested.",
+			Remediation: "Confirm whether the credential is sensitive. Remove it from client-side code, rotate or revoke it, and use server-side credential storage.",
+			Evidence:    fmt.Sprintf("URL: %s\nRule: %s\nLine: %d\nSecret: [REDACTED]\nNo credential validation performed.", source, r.RuleID, r.StartLine),
+			Category:    "secret",
+			StageName:   "JavaScript secrets",
+			Tool:        "gitleaks",
+		}
 		cp.Findings = append(cp.Findings, finding)
 		Log(ctx).Info("finding_discovered", "stage", "JavaScript secrets", "host", finding.Host, "severity", finding.Severity, "template", finding.Template, "title", finding.Title, "matched_at", finding.MatchedAt)
 	}

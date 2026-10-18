@@ -559,12 +559,38 @@ export default function Workspace() {
     message = "Changes saved",
   ) => {
     try {
+      if (path.includes("/cancel") && method === "POST") {
+        const match = path.match(/scans\/([^/]+)\/cancel/);
+        if (match) {
+          const scanId = match[1];
+          setState((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              scans: prev.scans.map((s) =>
+                s.id === scanId
+                  ? {
+                      ...s,
+                      status: "canceled",
+                      stages: s.stages.map((st) =>
+                        st.status === "running" || st.status === "pending"
+                          ? { ...st, status: "canceled" }
+                          : st,
+                      ),
+                    }
+                  : s,
+              ),
+            };
+          });
+        }
+      }
       await api(path, method, data);
       await refresh();
       setToast(message);
       return true;
     } catch (e) {
       setToast((e as Error).message);
+      await refresh();
       return false;
     }
   };
@@ -1193,6 +1219,9 @@ export default function Workspace() {
       {liveFinding && (
         <FindingDetail
           finding={liveFinding}
+          associatedAsset={state.assets.find(
+            (a) => a.host === liveFinding.host,
+          )}
           onClose={closeFinding}
           mutate={mutate}
         />
@@ -2243,14 +2272,74 @@ function Findings({
 }) {
   const [status, setStatus] = useWorkspaceFilter("findingStatus", "open"),
     [severity, setSeverity] = useWorkspaceFilter("severity", "all");
+  const [category, setCategory] = useWorkspaceFilter("findingCategory", "all");
   const [sort, setSort] = useWorkspaceFilter("findingSort", "priority"),
     [group, setGroup] = useWorkspaceFilter("findingGroup", "none");
+
+  const categories = [
+    { id: "all", label: "All discoveries", count: findings.length },
+    {
+      id: "vulnerability",
+      label: "Vulnerabilities",
+      count: findings.filter(
+        (f) => !f.category || f.category === "vulnerability",
+      ).length,
+    },
+    {
+      id: "port",
+      label: "Open Ports & Services",
+      count: findings.filter((f) => f.category === "port").length,
+    },
+    {
+      id: "endpoint",
+      label: "Endpoints & Routes",
+      count: findings.filter((f) => f.category === "endpoint").length,
+    },
+    {
+      id: "hazard",
+      label: "Parameter Hazards",
+      count: findings.filter((f) => f.category === "hazard").length,
+    },
+    {
+      id: "secret",
+      label: "Exposed Secrets",
+      count: findings.filter((f) => f.category === "secret").length,
+    },
+    {
+      id: "host",
+      label: "Discovered Hosts",
+      count: findings.filter((f) => f.category === "host").length,
+    },
+  ];
+
   const rows = findings
     .filter(
       (f) =>
         (status === "all" || f.status === status) &&
         (severity === "all" || f.severity === severity) &&
-        (f.title + " " + f.host + " " + f.template)
+        (category === "all" ||
+          (category === "vulnerability"
+            ? !f.category || f.category === "vulnerability"
+            : f.category === category)) &&
+        (
+          f.title +
+          " " +
+          f.host +
+          " " +
+          f.template +
+          " " +
+          (f.matchedAt || "") +
+          " " +
+          (f.ip || "") +
+          " " +
+          (f.port ? String(f.port) : "") +
+          " " +
+          (f.parameters?.join(" ") || "") +
+          " " +
+          (f.technologies?.join(" ") || "") +
+          " " +
+          (f.stageName || "")
+        )
           .toLowerCase()
           .includes(query.toLowerCase()),
     )
@@ -2273,6 +2362,19 @@ function Findings({
   const visible = rows.slice(start, start + 25);
   return (
     <>
+      <div className="tab-line finding-category-tabs">
+        {categories.map((c) => (
+          <button
+            key={c.id}
+            aria-pressed={category === c.id}
+            onClick={() => setCategory(c.id)}
+            className={category === c.id ? "tab-active" : ""}
+          >
+            {c.label}
+            <span>{c.count}</span>
+          </button>
+        ))}
+      </div>
       <div className="tab-line finding-tabs">
         {["open", "accepted risk", "false positive", "resolved", "all"].map(
           (s) => (
@@ -2296,7 +2398,7 @@ function Findings({
         <SearchField
           value={query}
           onChange={setQuery}
-          placeholder="Search findings or hosts…"
+          placeholder="Search findings, ports, routes, hosts, params, tech…"
         />
         <select
           className="filter-select"
@@ -2305,7 +2407,7 @@ function Findings({
           onChange={(e) => setSeverity(e.target.value)}
         >
           <option value="all">All severities</option>
-          {["critical", "high", "medium", "low"].map((s) => (
+          {["critical", "high", "medium", "low", "info"].map((s) => (
             <option value={s} key={s}>
               {s.charAt(0).toUpperCase() + s.slice(1)}
             </option>
@@ -2335,11 +2437,15 @@ function Findings({
           className="sr-only"
           onClick={() =>
             exportCSV("findings", [
-              ["Title", "Severity", "Host", "Status", "First seen"],
+              ["Title", "Category", "Severity", "Host", "IP", "Port", "Matched At", "Status", "First seen"],
               ...rows.map((f) => [
                 f.title,
+                f.category || "vulnerability",
                 f.severity,
                 f.host,
+                f.ip || "",
+                f.port || "",
+                f.matchedAt || "",
                 f.status,
                 f.firstSeen,
               ]),
@@ -2353,9 +2459,10 @@ function Findings({
         <table className="data-table responsive-table findings-table">
           <thead>
             <tr>
-              <th>Finding</th>
+              <th>Finding & Discovery</th>
               <th>Severity</th>
-              <th>Asset</th>
+              <th>Target Asset</th>
+              <th>Port / Route</th>
               <th>First seen</th>
               <th>Status</th>
               <th />
@@ -2368,7 +2475,7 @@ function Findings({
                   (index === 0 ||
                     visible[index - 1].template !== f.template) && (
                     <tr className="group-row">
-                      <th colSpan={6}>
+                      <th colSpan={7}>
                         {f.template} ·{" "}
                         {
                           rows.filter((row) => row.template === f.template)
@@ -2388,12 +2495,31 @@ function Findings({
                       }}
                     >
                       <span
-                        className={`finding-icon finding-icon-${f.severity}`}
+                        className={`finding-icon finding-icon-${f.category || f.severity || "info"}`}
                       >
-                        <Shield size={18} />
+                        {f.category === "port" ? (
+                          <Network size={18} />
+                        ) : f.category === "endpoint" ? (
+                          <Globe2 size={18} />
+                        ) : f.category === "hazard" ? (
+                          <TriangleAlert size={18} />
+                        ) : f.category === "secret" ? (
+                          <LockKeyhole size={18} />
+                        ) : f.category === "host" ? (
+                          <TargetIcon size={18} />
+                        ) : (
+                          <Shield size={18} />
+                        )}
                       </span>
                       <span>
-                        <strong>{f.title}</strong>
+                        <span className="finding-title-row">
+                          <strong>{f.title}</strong>
+                          {f.category && f.category !== "vulnerability" && (
+                            <span className="category-tag-pill">
+                              {f.category.toUpperCase()}
+                            </span>
+                          )}
+                        </span>
                         <small>{f.matchedAt || f.host}</small>
                       </span>
                     </button>
@@ -2401,7 +2527,23 @@ function Findings({
                   <td data-label="Severity">
                     <Severity value={f.severity} />
                   </td>
-                  <td data-label="Asset">{f.host}</td>
+                  <td data-label="Target Asset">
+                    <span className="asset-cell-wrap">
+                      <strong>{f.host}</strong>
+                      {f.ip && <small className="ip-chip">{f.ip}</small>}
+                    </span>
+                  </td>
+                  <td data-label="Port / Route">
+                    {f.port ? (
+                      <span className="port-badge">
+                        {f.port}/{f.protocol || "tcp"}
+                      </span>
+                    ) : f.method ? (
+                      <span className="method-badge">{f.method}</span>
+                    ) : (
+                      <span className="muted">{f.stageName || "—"}</span>
+                    )}
+                  </td>
                   <td data-label="First seen" className="muted">
                     {relative(f.firstSeen)}
                   </td>
@@ -3609,10 +3751,12 @@ function AssetDetail({
 }
 function FindingDetail({
   finding,
+  associatedAsset,
   onClose,
   mutate,
 }: {
   finding: Finding;
+  associatedAsset?: Asset;
   onClose: () => void;
   mutate: Mutation;
 }) {
@@ -3627,14 +3771,24 @@ function FindingDetail({
     <Modal title={finding.title} onClose={onClose} wide>
       <div className="detail-status">
         <Severity value={finding.severity} />
+        {finding.category && (
+          <span className="badge badge-accent">
+            {finding.category.toUpperCase()}
+          </span>
+        )}
         <Badge tone={finding.status === "resolved" ? "success" : "neutral"}>
           {finding.status}
         </Badge>
         <span>{finding.host}</span>
+        {finding.port && (
+          <span>
+            Port {finding.port}/{finding.protocol || "tcp"}
+          </span>
+        )}
       </div>
       <div className="finding-description">
         <div className="finding-origin">
-          <span>Affected service</span>
+          <span>Affected service / origin</span>
           <code>{finding.matchedAt || finding.host}</code>
           <CopyValue
             value={finding.matchedAt || finding.host}
@@ -3648,8 +3802,45 @@ function FindingDetail({
       </div>
       <dl className="detail-grid">
         <div>
-          <dt>Template</dt>
-          <dd>{finding.template}</dd>
+          <dt>Category</dt>
+          <dd>
+            {finding.category
+              ? finding.category.charAt(0).toUpperCase() +
+                finding.category.slice(1)
+              : "Vulnerability"}
+          </dd>
+        </div>
+        <div>
+          <dt>Target host</dt>
+          <dd>{finding.host}</dd>
+        </div>
+        <div>
+          <dt>Resolved IP</dt>
+          <dd>{finding.ip || associatedAsset?.ip || "Pending DNS"}</dd>
+        </div>
+        <div>
+          <dt>Target port</dt>
+          <dd>
+            {finding.port
+              ? `${finding.port} / ${(finding.protocol || "tcp").toUpperCase()}`
+              : associatedAsset?.ports?.length
+                ? associatedAsset.ports.join(", ")
+                : "—"}
+          </dd>
+        </div>
+        <div>
+          <dt>Template ID</dt>
+          <dd>
+            <code>{finding.template}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Discovery stage</dt>
+          <dd>{finding.stageName || "Detection"}</dd>
+        </div>
+        <div>
+          <dt>Scanner tool</dt>
+          <dd>{finding.tool || "nuclei"}</dd>
         </div>
         <div>
           <dt>First seen</dt>
@@ -3664,6 +3855,92 @@ function FindingDetail({
           <dd>Secrets redacted</dd>
         </div>
       </dl>
+
+      {finding.parameters && finding.parameters.length > 0 && (
+        <div className="pentester-section">
+          <h4>Route Parameters Identified ({finding.parameters.length})</h4>
+          <div className="param-chips-wrap">
+            {finding.parameters.map((p) => (
+              <span key={p} className="param-chip">
+                <code>{p}</code>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {((finding.technologies && finding.technologies.length > 0) ||
+        (associatedAsset?.technologies &&
+          associatedAsset.technologies.length > 0)) && (
+        <div className="pentester-section">
+          <h4>Technologies Detected on Host</h4>
+          <div className="param-chips-wrap">
+            {(
+              finding.technologies ||
+              associatedAsset?.technologies ||
+              []
+            ).map((t) => (
+              <span key={t} className="badge badge-neutral">
+                {t}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {associatedAsset &&
+        associatedAsset.ports &&
+        associatedAsset.ports.length > 0 && (
+          <div className="pentester-section">
+            <h4>All Open Ports on Host ({associatedAsset.ports.length})</h4>
+            <div className="param-chips-wrap">
+              {associatedAsset.ports.map((p) => (
+                <span
+                  key={p}
+                  className={`port-chip ${finding.port === p ? "port-chip-active" : ""}`}
+                >
+                  {p}/tcp
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      {(finding.stepLog || finding.stageName) && (
+        <div className="pentester-section scan-log-section">
+          <div className="scan-log-header">
+            <h4>Scan Step Execution &amp; Success Log</h4>
+            <span
+              className={`badge ${finding.stepSuccess !== false ? "badge-success" : "badge-neutral"}`}
+            >
+              {finding.stepSuccess !== false ? "Step Succeeded" : "Step Executed"}
+            </span>
+          </div>
+          <div className="scan-step-meta">
+            {finding.stageName && (
+              <span>
+                <strong>Stage:</strong> {finding.stageName}
+              </span>
+            )}
+            {finding.tool && (
+              <span>
+                <strong>Tool:</strong> {finding.tool}
+              </span>
+            )}
+            {finding.scanId && (
+              <span>
+                <strong>Scan ID:</strong> <code>{finding.scanId}</code>
+              </span>
+            )}
+          </div>
+          {finding.stepLog ? (
+            <pre className="step-log-output">{finding.stepLog}</pre>
+          ) : (
+            <p className="field-hint">
+              Observations validated and committed during {finding.stageName || "scanning"} pass.
+            </p>
+          )}
+        </div>
+      )}
       <button
         className="evidence-toggle"
         aria-expanded={evidence}

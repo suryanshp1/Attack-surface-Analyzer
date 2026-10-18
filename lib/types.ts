@@ -75,6 +75,18 @@ export type Finding = {
   remediation: string;
   evidence: string;
   notes: { text: string; at: string; actor: string }[];
+  category?: "vulnerability" | "port" | "endpoint" | "hazard" | "secret" | "host" | string;
+  port?: number;
+  protocol?: string;
+  method?: string;
+  parameters?: string[];
+  stageName?: string;
+  tool?: string;
+  technologies?: string[];
+  ip?: string;
+  scanId?: string;
+  stepLog?: string;
+  stepSuccess?: boolean;
 };
 export type Scan = {
   coverage?: {

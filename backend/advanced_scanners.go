@@ -253,7 +253,19 @@ func (w *Worker) assessTLS(ctx context.Context, c Claim, cp Checkpoint, dir stri
 				id, title, severity string
 			}{{row.SelfSigned, "tls-self-signed", "Self-signed TLS certificate", "medium"}, {row.Mismatched, "tls-name-mismatch", "TLS certificate hostname mismatch", "medium"}, {row.Untrusted, "tls-untrusted", "Untrusted TLS certificate chain", "medium"}} {
 				if issue.match {
-					cp.Findings = append(cp.Findings, Finding{Host: a.Host, Template: issue.id, MatchedAt: origin, Title: issue.title, Severity: issue.severity, Description: "TLSx observed a certificate trust or name mismatch on this public service.", Remediation: "Install a publicly trusted certificate covering the served hostname and provide the full certificate chain.", Evidence: fmt.Sprintf("TLSx host: %s\nTLS: %s\nCipher: %s\nIssuer: %s\nExpiry: %s", origin, row.Version, row.Cipher, row.Issuer, row.NotAfter)})
+					cp.Findings = append(cp.Findings, Finding{
+						Host:        a.Host,
+						Template:    issue.id,
+						MatchedAt:   origin,
+						Title:       issue.title,
+						Severity:    issue.severity,
+						Description: "TLSx observed a certificate trust or name mismatch on this public service.",
+						Remediation: "Install a publicly trusted certificate covering the served hostname and provide the full certificate chain.",
+						Evidence:    fmt.Sprintf("TLSx host: %s\nTLS: %s\nCipher: %s\nIssuer: %s\nExpiry: %s", origin, row.Version, row.Cipher, row.Issuer, row.NotAfter),
+						Category:    "vulnerability",
+						StageName:   "TLS assessment",
+						Tool:        "tlsx",
+					})
 				}
 			}
 			if cp.SecretCoverage == nil {

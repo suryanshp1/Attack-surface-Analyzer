@@ -314,6 +314,49 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, 200, map[string]any{"status": "ok", "liveScanning": s.liveEnabled, "workers": live, "storage": s.db != nil, "evidence": s.evidence != nil})
 }
+
+func (s *Server) watchScan(w http.ResponseWriter, r *http.Request, worker, scanID, lease string) {
+	var ctxDone <-chan struct{}
+	if s.ctx != nil {
+		ctxDone = s.ctx.Done()
+	}
+	for {
+		s.mu.Lock()
+		index := -1
+		for i, sc := range s.state.Scans {
+			if sc.ID == scanID {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			s.mu.Unlock()
+			fail(w, 404, "Scan not found")
+			return
+		}
+		sc := &s.state.Scans[index]
+		leaseUntil, leaseErr := time.Parse(time.RFC3339, sc.LeaseUntil)
+		if leaseErr != nil || !time.Now().Before(leaseUntil) || sc.Worker != worker || sc.Lease == "" || subtle.ConstantTimeCompare([]byte(sc.Lease), []byte(lease)) != 1 || sc.Status != "running" || s.state.Settings.Paused {
+			s.mu.Unlock()
+			fail(w, 409, "Lease lost or scan canceled")
+			return
+		}
+		ch := s.changeChannel()
+		s.mu.Unlock()
+
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ctxDone:
+			return
+		case <-ch:
+		case <-time.After(10 * time.Second):
+			respond(w, 200, map[string]bool{"active": true})
+			return
+		}
+	}
+}
+
 func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 	token := os.Getenv("WORKER_TOKEN")
 	given := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -344,6 +387,10 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(p.Worker) < 3 || len(p.Worker) > 100 {
 		fail(w, 400, "Worker identity required")
+		return
+	}
+	if r.URL.Path == "/internal/watch" {
+		s.watchScan(w, r, p.Worker, p.ScanID, p.Lease)
 		return
 	}
 	s.mu.Lock()
@@ -639,6 +686,7 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 		// Validated, lease-checked observations become visible as each stage commits.
 		// Resolution still waits for normalize after a complete scan.
 		if p.Status != "running" {
+			s.publishScanAssets(sc, now())
 			s.publishScanFindings(sc, now())
 			s.recountAssetFindings(sc.TargetID)
 		}
@@ -1086,6 +1134,108 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 	s.emit("scan", "Scan "+sc.Status, sc.Domain+" · "+fmt.Sprint(len(sc.Checkpoint.Assets))+" assets", stamp)
 }
 
+func mergeServices(existing, incoming []Service) []Service {
+	byPort := make(map[int]Service, len(existing)+len(incoming))
+	for _, s := range existing {
+		byPort[s.Port] = s
+	}
+	for _, s := range incoming {
+		if old, ok := byPort[s.Port]; ok {
+			if s.URL != "" {
+				old.URL = s.URL
+			}
+			if s.Status > 0 {
+				old.Status = s.Status
+			}
+			if s.Title != "" {
+				old.Title = s.Title
+			}
+			if len(s.Technologies) > 0 {
+				old.Technologies = dedupeStrings(append(old.Technologies, s.Technologies...))
+			}
+			if s.TLSVersion != "" {
+				old.TLSVersion = s.TLSVersion
+			}
+			if s.Cipher != "" {
+				old.Cipher = s.Cipher
+			}
+			if s.CertificateExpiry != "" {
+				old.CertificateExpiry = s.CertificateExpiry
+			}
+			if s.Issuer != "" {
+				old.Issuer = s.Issuer
+			}
+			byPort[s.Port] = old
+		} else {
+			byPort[s.Port] = s
+		}
+	}
+	merged := make([]Service, 0, len(byPort))
+	for _, s := range byPort {
+		merged = append(merged, s)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Port < merged[j].Port })
+	return merged
+}
+
+// publishScanAssets upserts observed assets, open ports, endpoints, and services
+// as soon as a validated stage checkpoint commits.
+func (s *Server) publishScanAssets(sc *Scan, stamp string) {
+	for _, observed := range sc.Checkpoint.Assets {
+		if observed.Host == "" {
+			continue
+		}
+		found := false
+		for i := range s.state.Assets {
+			a := &s.state.Assets[i]
+			if a.TargetID == sc.TargetID && a.Host == observed.Host {
+				if observed.IP != "" {
+					a.IP = observed.IP
+				}
+				if len(observed.Ports) > 0 {
+					for _, p := range observed.Ports {
+						if !contains(intStrings(a.Ports), strconv.Itoa(p)) {
+							a.Ports = append(a.Ports, p)
+						}
+					}
+					sort.Ints(a.Ports)
+				}
+				if len(observed.Services) > 0 {
+					a.Services = mergeServices(a.Services, observed.Services)
+				}
+				if len(observed.Endpoints) > 0 {
+					a.Endpoints = mergeEndpoints(a.Endpoints, observed.Endpoints, stamp, false)
+				}
+				if len(observed.Technologies) > 0 {
+					a.Technologies = dedupeStrings(append(a.Technologies, observed.Technologies...))
+				}
+				if observed.Title != "" {
+					a.Title = observed.Title
+				}
+				if observed.Status > 0 {
+					a.Status = observed.Status
+				}
+				if observed.URL != "" {
+					a.URL = observed.URL
+				}
+				if observed.TLS != "" {
+					a.TLS = observed.TLS
+				}
+				a.LastSeen = stamp
+				found = true
+				break
+			}
+		}
+		if !found {
+			observed.TargetID = sc.TargetID
+			observed.ID = fingerprint(sc.TargetID, observed.Host)
+			observed.FirstSeen, observed.LastSeen = stamp, stamp
+			observed.Endpoints = mergeEndpoints(observed.Endpoints, nil, stamp, false)
+			s.state.Assets = append(s.state.Assets, observed)
+		}
+	}
+}
+
 // publishScanFindings upserts observed findings as soon as a validated stage
 // checkpoint commits. It is idempotent and never resolves findings: lifecycle
 // resolution remains in normalize after a complete, successful scan.
@@ -1101,16 +1251,58 @@ func (s *Server) publishScanFindings(sc *Scan, stamp string) map[string]bool {
 		f.Evidence = redact(capString(f.Evidence, 16<<10))
 		f.FirstSeen, f.LastSeen = stamp, stamp
 		f.Notes, f.Status = []Note{}, "open"
+		if f.ScanID == "" {
+			f.ScanID = sc.ID
+		}
 		found[f.ID] = true
 		if i, ok := index[f.ID]; ok {
 			old := s.state.Findings[i]
 			f.FirstSeen, f.Notes, f.Status, f.EvidenceKey = old.FirstSeen, old.Notes, old.Status, old.EvidenceKey
+			if f.ScanID == "" {
+				f.ScanID = old.ScanID
+			}
+			if f.StageName == "" {
+				f.StageName = old.StageName
+			}
+			if f.StepLog == "" {
+				f.StepLog = old.StepLog
+			}
 			if old.Status == "resolved" {
 				f.Status = "open"
 				s.emit("finding", "Finding reopened", f.Title+" · "+f.Host, stamp)
+				if f.StageName != "" {
+					toolName := f.Tool
+					if toolName == "" {
+						toolName = "pipeline"
+					}
+					scanID := sc.ID
+					if scanID == "" {
+						scanID = "active-run"
+					}
+					f.Notes = append(f.Notes, Note{
+						Text:  fmt.Sprintf("Scan step '%s' rediscovered finding in scan %s.", f.StageName, scanID),
+						At:    stamp,
+						Actor: "Scanner (" + toolName + ")",
+					})
+				}
 			}
 			s.state.Findings[i] = f
 			continue
+		}
+		if len(f.Notes) == 0 && f.StageName != "" {
+			toolName := f.Tool
+			if toolName == "" {
+				toolName = "pipeline"
+			}
+			scanID := sc.ID
+			if scanID == "" {
+				scanID = "active-run"
+			}
+			f.Notes = append(f.Notes, Note{
+				Text:  fmt.Sprintf("Scan step '%s' verified finding in scan %s.", f.StageName, scanID),
+				At:    stamp,
+				Actor: "Scanner (" + toolName + ")",
+			})
 		}
 		index[f.ID] = len(s.state.Findings)
 		s.state.Findings = append(s.state.Findings, f)

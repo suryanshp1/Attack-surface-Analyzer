@@ -170,7 +170,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	permit, err := checkPermit(parts[1], g.Secret)
-	if err != nil || !g.active(r.Context(), parts[1]) {
+	if err != nil || !g.activeCached(r.Context(), parts[1]) {
 		http.Error(w, "Scan permit is invalid, expired or canceled", 403)
 		return
 	}
@@ -289,7 +289,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 				case <-watch:
 					return
 				case <-ticker.C:
-					if !g.active(context.Background(), parts[1]) {
+					if !g.activeCached(context.Background(), parts[1]) {
 						client.Close()
 						upstream.Close()
 						return

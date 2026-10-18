@@ -83,6 +83,38 @@ func (w *Worker) call(ctx context.Context, path string, payload any, result any)
 func (w *Worker) payload(sc Scan) map[string]any {
 	return map[string]any{"worker": w.ID, "versions": toolVersions, "scanId": sc.ID, "lease": sc.Lease}
 }
+
+func (w *Worker) watchCancellation(ctx context.Context, sc Scan, retryInterval time.Duration, cancel func()) {
+	if retryInterval <= 0 {
+		retryInterval = time.Second
+	}
+	for ctx.Err() == nil {
+		err := w.call(ctx, "/internal/watch", w.payload(sc), nil)
+		if ctx.Err() != nil {
+			return
+		}
+		var apiErr *workerAPIError
+		if errors.As(err, &apiErr) {
+			if apiErr.status == http.StatusConflict {
+				cancel()
+				return
+			}
+		}
+		if err == nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				continue
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(retryInterval):
+		}
+	}
+}
 func runWorker() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -193,6 +225,7 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 	cp := sc.Checkpoint
 	finished := make(chan struct{})
 	defer close(finished)
+	go w.watchCancellation(ctx, sc, time.Second, cancel)
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -280,6 +313,7 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			cp, logs, err = w.discover(stageCtx, claim, cp, proxyURL, workdir)
 		case "DNS resolution":
 			cp, logs, err = w.resolve(stageCtx, claim, cp, workdir)
+			cp = enrichHostFindings(cp, claim.Target.ID)
 			if err == nil && histCh == nil {
 				histCh = make(chan historicalResult, 1)
 				histDone = make(chan struct{})
@@ -293,6 +327,7 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			}
 		case "Port discovery":
 			cp, logs, err = w.scanPorts(stageCtx, claim, cp, workdir)
+			cp = enrichPortFindings(cp, claim.Target.ID)
 		case "TLS assessment":
 			cp, logs, err = w.assessTLS(stageCtx, claim, cp, workdir)
 		case "Historical discovery":
@@ -312,6 +347,7 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			}
 		case "HTTP probing":
 			cp, logs, err = w.probe(stageCtx, claim, cp, proxyURL, workdir)
+			cp = enrichServiceFindings(cp, claim.Target.ID)
 		case "TLS inspection":
 			cp, logs, err = w.inspectCertificates(stageCtx, cp, proxyURL, sc.ID, sc.Rate, sc.Concurrency)
 		case "Endpoint crawling":
@@ -325,6 +361,8 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			if len(cp.Hazards) > 0 {
 				logs += fmt.Sprintf("\n%d endpoint parameter hazards classified.", len(cp.Hazards))
 			}
+			cp = enrichEndpointFindings(cp, claim.Target.ID)
+			cp = enrichHazardFindings(cp, claim.Target.ID)
 		case "JavaScript secrets":
 			cp, logs, err = w.analyzeJavaScript(stageCtx, claim, cp, proxyURL, workdir)
 		case "Detection":
@@ -378,6 +416,19 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 		}
 		p["log"] = logs
 		p["status"] = "completed" // Execution pass finished; coverage is tracked separately.
+		for i := range cp.Findings {
+			if cp.Findings[i].StageName == sc.Stages[stage].Name || cp.Findings[i].StageName == "" {
+				if cp.Findings[i].StageName == "" {
+					cp.Findings[i].StageName = sc.Stages[stage].Name
+				}
+				cp.Findings[i].ScanID = sc.ID
+				cp.Findings[i].StepSuccess = (err == nil)
+				if cp.Findings[i].StepLog == "" {
+					cp.Findings[i].StepLog = redact(capString(logs, 2000))
+				}
+			}
+		}
+		p["checkpoint"] = cp
 		setStageIssue(&cp, sc.Stages[stage].Name, err)
 		if err != nil {
 			issue := fmt.Sprintf("Stage %s encountered issue: %v. Downstream stages continue.", sc.Stages[stage].Name, err)
@@ -943,7 +994,19 @@ func tlsFindings(cp Checkpoint) (Checkpoint, string, error) {
 			continue
 		}
 		if time.Until(expires) < 14*24*time.Hour {
-			finding := Finding{Host: a.Host, Template: "tls-expiry", MatchedAt: a.URL, Title: "TLS certificate expiring soon", Severity: "medium", Description: "The observed TLS certificate expires within 14 days.", Remediation: "Renew the certificate and verify automatic renewal.", Evidence: "URL: " + a.URL + "\nCertificate expires: " + a.TLS}
+			finding := Finding{
+				Host:        a.Host,
+				Template:    "tls-expiry",
+				MatchedAt:   a.URL,
+				Title:       "TLS certificate expiring soon",
+				Severity:    "medium",
+				Description: "The observed TLS certificate expires within 14 days.",
+				Remediation: "Renew the certificate and verify automatic renewal.",
+				Evidence:    "URL: " + a.URL + "\nCertificate expires: " + a.TLS,
+				Category:    "vulnerability",
+				StageName:   "TLS inspection",
+				Tool:        "tlsx",
+			}
 			clarifyCertificateFinding(&finding)
 			cp.Findings = append(cp.Findings, finding)
 			Log(context.Background()).Info("finding_discovered", "stage", "TLS inspection", "host", finding.Host, "severity", finding.Severity, "template", finding.Template, "title", finding.Title)
@@ -1136,6 +1199,7 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 					"-disable-unsigned-templates",
 					"-etags", "dos,intrusive,fuzz,bruteforce",
 					"-no-interactsh",
+					"-scan-strategy", "host-spray",
 					"-proxy", proxy,
 					"-H", "X-Scanner: Surfacer/" + c.Scan.ID,
 					"-H", "User-Agent: " + scannerAgent(c.Scan.ID, "detection"),
@@ -1143,8 +1207,8 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 					"-c", strconv.Itoa(tc),
 					"-pc", "1",
 					"-bs", strconv.Itoa(hc),
-					"-mhe", "5",
-					"-timeout", "10",
+					"-mhe", "3",
+					"-timeout", "4",
 					"-retries", "1",
 					"-response-size-read", "65536",
 					"-include-rr",
@@ -1242,6 +1306,15 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 				key := fingerprint(rec.finding.Host, rec.finding.Template, rec.finding.MatchedAt)
 				if !findingKeys[key] {
 					findingKeys[key] = true
+					if rec.finding.Category == "" {
+						rec.finding.Category = "vulnerability"
+					}
+					if rec.finding.StageName == "" {
+						rec.finding.StageName = "Detection"
+					}
+					if rec.finding.Tool == "" {
+						rec.finding.Tool = "nuclei"
+					}
 					cp.Findings = append(cp.Findings, *rec.finding)
 					newFindingsInBatch++
 					Log(ctx).Info("finding_discovered", "stage", "Detection", "host", rec.finding.Host, "severity", rec.finding.Severity, "template", rec.finding.Template, "title", rec.finding.Title, "matched_at", rec.finding.MatchedAt)
@@ -1330,4 +1403,326 @@ func dedupeStrings(items []string) []string {
 		}
 	}
 	return out
+}
+
+func sanitizeEndpointKey(p string) string {
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return "root"
+	}
+	var b strings.Builder
+	for _, r := range p {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	res := b.String()
+	if len(res) > 30 {
+		res = res[:30]
+	}
+	return strings.Trim(res, "-")
+}
+
+func formatHazardClass(hazardClass string) string {
+	switch hazardClass {
+	case "ssrf_candidate":
+		return "Server-Side Request Forgery (SSRF)"
+	case "redirect_candidate":
+		return "Open Redirect"
+	case "lfi_candidate":
+		return "Local File Inclusion (LFI)"
+	case "sqli_candidate":
+		return "SQL Injection (SQLi)"
+	case "debug_flag":
+		return "Debug / Administrative Parameter"
+	case "sensitive_file":
+		return "Sensitive File / Backup Exposure"
+	default:
+		return strings.ReplaceAll(hazardClass, "_", " ")
+	}
+}
+
+func hazardRemediation(hazardClass string) string {
+	switch hazardClass {
+	case "ssrf_candidate":
+		return "Validate and restrict target URLs against an explicit strict allowlist. Block loopback and internal RFC1918 addresses."
+	case "redirect_candidate":
+		return "Use relative path redirection or validate destination URLs against an allowlist of trusted domains."
+	case "lfi_candidate":
+		return "Avoid direct filesystem lookups based on user input. Use index mapping and strictly validate against path traversal (../)."
+	case "sqli_candidate":
+		return "Use parameterized queries / prepared statements for all database interactions. Never concatenate untrusted parameters."
+	case "debug_flag":
+		return "Disable debug and administrative parameters in production builds."
+	case "sensitive_file":
+		return "Remove backup and configuration files from web-accessible directories."
+	default:
+		return "Apply defensive input validation and sanitize all parameters before processing."
+	}
+}
+
+func enrichHostFindings(cp Checkpoint, targetID string) Checkpoint {
+	existing := make(map[string]int, len(cp.Findings))
+	for i, f := range cp.Findings {
+		key := fmt.Sprintf("%s|%s|%s", f.Host, f.Template, f.MatchedAt)
+		existing[key] = i
+	}
+	for _, a := range cp.Assets {
+		if a.Blocked || a.Host == "" || a.IP == "" {
+			continue
+		}
+		tmpl := "host-dns"
+		matched := a.Host
+		key := fmt.Sprintf("%s|%s|%s", a.Host, tmpl, matched)
+		if _, ok := existing[key]; ok {
+			continue
+		}
+		f := Finding{
+			TargetID:    targetID,
+			Host:        a.Host,
+			IP:          a.IP,
+			Category:    "host",
+			Severity:    "info",
+			Title:       fmt.Sprintf("Active Host: %s", a.Host),
+			Template:    tmpl,
+			MatchedAt:   matched,
+			StageName:   "DNS resolution",
+			Tool:        "dnsx",
+			Description: fmt.Sprintf("Domain name resolved to active public IP address %s.", a.IP),
+			Remediation: "Regularly audit public DNS records and decommission unused subdomains to prevent subdomain takeover or orphaned resource exposure.",
+			Evidence:    fmt.Sprintf("Host: %s\nIP: %s\nStatus: resolved\nStage: DNS resolution\nTool: dnsx", a.Host, a.IP),
+		}
+		existing[key] = len(cp.Findings)
+		cp.Findings = append(cp.Findings, f)
+	}
+	return cp
+}
+
+func enrichPortFindings(cp Checkpoint, targetID string) Checkpoint {
+	existing := make(map[string]int, len(cp.Findings))
+	for i, f := range cp.Findings {
+		key := fmt.Sprintf("%s|%s|%s", f.Host, f.Template, f.MatchedAt)
+		existing[key] = i
+	}
+	for _, a := range cp.Assets {
+		if a.Blocked || a.Host == "" {
+			continue
+		}
+		for _, port := range a.Ports {
+			tmpl := fmt.Sprintf("port-%d", port)
+			matched := fmt.Sprintf("%s:%d", a.Host, port)
+			key := fmt.Sprintf("%s|%s|%s", a.Host, tmpl, matched)
+			if _, ok := existing[key]; ok {
+				continue
+			}
+			f := Finding{
+				TargetID:    targetID,
+				Host:        a.Host,
+				IP:          a.IP,
+				Category:    "port",
+				Port:        port,
+				Protocol:    "tcp",
+				Severity:    "info",
+				Title:       fmt.Sprintf("Open Port: %d/tcp", port),
+				Template:    tmpl,
+				MatchedAt:   matched,
+				StageName:   "Port discovery",
+				Tool:        "naabu",
+				Description: fmt.Sprintf("Public network port %d/tcp detected open on host %s (%s).", port, a.Host, a.IP),
+				Remediation: "Ensure that only required public ports are accessible. Restrict internal, database, or administrative services with a firewall.",
+				Evidence:    fmt.Sprintf("Host: %s\nIP: %s\nPort: %d/tcp\nStatus: open\nStage: Port discovery\nTool: naabu", a.Host, a.IP, port),
+			}
+			existing[key] = len(cp.Findings)
+			cp.Findings = append(cp.Findings, f)
+		}
+	}
+	return cp
+}
+
+func enrichServiceFindings(cp Checkpoint, targetID string) Checkpoint {
+	existing := make(map[string]int, len(cp.Findings))
+	for i, f := range cp.Findings {
+		key := fmt.Sprintf("%s|%s|%s", f.Host, f.Template, f.MatchedAt)
+		existing[key] = i
+	}
+	for _, a := range cp.Assets {
+		if a.Blocked || a.Host == "" {
+			continue
+		}
+		for _, svc := range a.Services {
+			proto := "http"
+			if strings.HasPrefix(svc.URL, "https://") {
+				proto = "https"
+			}
+			tmpl := fmt.Sprintf("service-%d", svc.Port)
+			matched := svc.URL
+			if matched == "" {
+				matched = fmt.Sprintf("%s://%s:%d", proto, a.Host, svc.Port)
+			}
+			key := fmt.Sprintf("%s|%s|%s", a.Host, tmpl, matched)
+			desc := fmt.Sprintf("HTTP service responding on %s. HTTP Status: %d. Page Title: %q.", matched, svc.Status, svc.Title)
+			if len(svc.Technologies) > 0 {
+				desc += fmt.Sprintf(" Technologies detected: %s.", strings.Join(svc.Technologies, ", "))
+			}
+			ev := fmt.Sprintf("URL: %s\nStatus: %d\nTitle: %s\nTechnologies: %s\nTLS Version: %s\nCipher: %s\nCert Expiry: %s\nStage: HTTP probing\nTool: httpx",
+				matched, svc.Status, svc.Title, strings.Join(svc.Technologies, ", "), svc.TLSVersion, svc.Cipher, svc.CertificateExpiry)
+
+			updated := false
+			for idx := range cp.Findings {
+				f := &cp.Findings[idx]
+				if f.Host == a.Host && f.Category == "port" && f.Port == svc.Port {
+					f.Protocol = proto
+					f.MatchedAt = matched
+					f.Title = fmt.Sprintf("Exposed %s Service: %d/%s", strings.ToUpper(proto), svc.Port, proto)
+					f.StageName = "HTTP probing"
+					f.Tool = "httpx"
+					f.Technologies = svc.Technologies
+					f.Description = desc
+					f.Evidence = ev
+					updated = true
+					break
+				}
+			}
+			if updated {
+				continue
+			}
+
+			if idx, ok := existing[key]; ok {
+				cp.Findings[idx].Technologies = svc.Technologies
+				cp.Findings[idx].Evidence = ev
+				cp.Findings[idx].Description = desc
+				continue
+			}
+			f := Finding{
+				TargetID:     targetID,
+				Host:         a.Host,
+				IP:           a.IP,
+				Category:     "port",
+				Port:         svc.Port,
+				Protocol:     proto,
+				Severity:     "info",
+				Title:        fmt.Sprintf("Exposed %s Service: %d/%s", strings.ToUpper(proto), svc.Port, proto),
+				Template:     tmpl,
+				MatchedAt:    matched,
+				Technologies: svc.Technologies,
+				StageName:    "HTTP probing",
+				Tool:         "httpx",
+				Description:  desc,
+				Remediation:  "Audit service configuration to verify authentication, suppress detailed technology banners, and enforce HTTPS.",
+				Evidence:     ev,
+			}
+			existing[key] = len(cp.Findings)
+			cp.Findings = append(cp.Findings, f)
+		}
+	}
+	return cp
+}
+
+func enrichEndpointFindings(cp Checkpoint, targetID string) Checkpoint {
+	existing := make(map[string]int, len(cp.Findings))
+	for i, f := range cp.Findings {
+		key := fmt.Sprintf("%s|%s|%s", f.Host, f.Template, f.MatchedAt)
+		existing[key] = i
+	}
+	for _, a := range cp.Assets {
+		if a.Blocked || a.Host == "" {
+			continue
+		}
+		count := 0
+		for _, ep := range a.Endpoints {
+			if ep.URL == "" {
+				continue
+			}
+			if len(ep.Parameters) == 0 && ep.Kind != "API endpoint" && ep.Kind != "Form" && count >= 10 {
+				continue
+			}
+			if count >= 50 {
+				break
+			}
+			u, err := url.Parse(ep.URL)
+			epPath := "/"
+			if err == nil && u.Path != "" {
+				epPath = u.Path
+			}
+			method := ep.Method
+			if method == "" {
+				method = "GET"
+			}
+			tmpl := fmt.Sprintf("endpoint-%s-%s", strings.ToLower(method), sanitizeEndpointKey(epPath))
+			matched := ep.URL
+			key := fmt.Sprintf("%s|%s|%s", a.Host, tmpl, matched)
+			if _, ok := existing[key]; ok {
+				continue
+			}
+			count++
+			f := Finding{
+				TargetID:    targetID,
+				Host:        a.Host,
+				IP:          a.IP,
+				Category:    "endpoint",
+				Method:      method,
+				Parameters:  ep.Parameters,
+				Severity:    "info",
+				Title:       fmt.Sprintf("Discovered Endpoint: %s %s", method, epPath),
+				Template:    tmpl,
+				MatchedAt:   matched,
+				StageName:   "Endpoint crawling",
+				Tool:        "katana",
+				Description: fmt.Sprintf("Application endpoint (%s) discovered during crawling. Method: %s with %d parameter(s): %s.", ep.Kind, method, len(ep.Parameters), strings.Join(ep.Parameters, ", ")),
+				Remediation: "Ensure that this route implements strict authentication, input validation, and rate limiting against brute force or parameter tampering.",
+				Evidence:    fmt.Sprintf("URL: %s\nMethod: %s\nKind: %s\nParameters: %s\nSource: %s\nStage: Endpoint crawling\nTool: katana", ep.URL, method, ep.Kind, strings.Join(ep.Parameters, ", "), ep.Source),
+			}
+			existing[key] = len(cp.Findings)
+			cp.Findings = append(cp.Findings, f)
+		}
+	}
+	return cp
+}
+
+func enrichHazardFindings(cp Checkpoint, targetID string) Checkpoint {
+	existing := make(map[string]int, len(cp.Findings))
+	for i, f := range cp.Findings {
+		key := fmt.Sprintf("%s|%s|%s", f.Host, f.Template, f.MatchedAt)
+		existing[key] = i
+	}
+	for _, h := range cp.Hazards {
+		if h.URL == "" {
+			continue
+		}
+		u, _ := url.Parse(h.URL)
+		host := ""
+		if u != nil {
+			host = u.Hostname()
+		}
+		tmpl := fmt.Sprintf("hazard-%s", h.HazardClass)
+		matched := h.URL
+		key := fmt.Sprintf("%s|%s|%s", host, tmpl, matched)
+		if _, ok := existing[key]; ok {
+			continue
+		}
+		sev := h.Severity
+		if sev == "" {
+			sev = "medium"
+		}
+		f := Finding{
+			TargetID:    targetID,
+			Host:        host,
+			Category:    "hazard",
+			Parameters:  []string{h.Parameter},
+			Severity:    sev,
+			Title:       fmt.Sprintf("Hazard: %s on parameter '%s'", formatHazardClass(h.HazardClass), h.Parameter),
+			Template:    tmpl,
+			MatchedAt:   matched,
+			StageName:   "Endpoint crawling",
+			Tool:        "hazard-classifier",
+			Description: fmt.Sprintf("Discovered endpoint parameter %q on %s matches heuristics for %s. Pentesters should test this parameter for injection, traversal, or unauthorized server requests.", h.Parameter, h.URL, formatHazardClass(h.HazardClass)),
+			Remediation: hazardRemediation(h.HazardClass),
+			Evidence:    fmt.Sprintf("URL: %s\nParameter: %s\nHazard Class: %s\nSeverity: %s\nStage: Endpoint crawling\nTool: hazard-classifier", h.URL, h.Parameter, h.HazardClass, sev),
+		}
+		existing[key] = len(cp.Findings)
+		cp.Findings = append(cp.Findings, f)
+	}
+	return cp
 }

@@ -64,3 +64,137 @@ func TestRecountAssetFindingsUsesOpenFindingsOnly(t *testing.T) {
 		t.Fatal("other target touched", a)
 	}
 }
+
+func TestPublishScanAssetsSyncsIntermediateState(t *testing.T) {
+	s := &Server{}
+	sc := &Scan{
+		TargetID: "t1",
+		Checkpoint: Checkpoint{
+			Assets: []Asset{
+				{
+					Host:  "api.owned.example",
+					IP:    "1.2.3.4",
+					Ports: []int{80, 443, 8080},
+					Services: []Service{
+						{Port: 8080, URL: "http://api.owned.example:8080", Status: 200, Title: "API Gateway", Technologies: []string{"Express", "Node.js"}},
+					},
+					Endpoints: []Endpoint{
+						{URL: "http://api.owned.example:8080/v1/users", Method: "GET", Parameters: []string{"page", "limit"}, Kind: "API endpoint"},
+					},
+				},
+			},
+		},
+	}
+	s.publishScanAssets(sc, "2026-10-18T00:00:00Z")
+	if len(s.state.Assets) != 1 {
+		t.Fatalf("expected 1 asset, got %d", len(s.state.Assets))
+	}
+	a := s.state.Assets[0]
+	if a.Host != "api.owned.example" || a.IP != "1.2.3.4" || len(a.Ports) != 3 || len(a.Services) != 1 || len(a.Endpoints) != 1 {
+		t.Fatalf("asset not synced accurately: %+v", a)
+	}
+	if a.Services[0].Title != "API Gateway" || len(a.Services[0].Technologies) != 2 {
+		t.Fatalf("services not synced accurately: %+v", a.Services)
+	}
+}
+
+func TestStageEnrichmentFindings(t *testing.T) {
+	cp := Checkpoint{
+		Assets: []Asset{
+			{
+				Host:  "app.owned.example",
+				IP:    "1.2.3.5",
+				Ports: []int{443, 8443},
+				Services: []Service{
+					{Port: 443, URL: "https://app.owned.example", Status: 200, Title: "App Portal", Technologies: []string{"React", "Nginx"}},
+				},
+				Endpoints: []Endpoint{
+					{URL: "https://app.owned.example/search", Method: "GET", Parameters: []string{"q", "category"}, Kind: "API endpoint"},
+				},
+			},
+		},
+		Hazards: []EndpointHazard{
+			{URL: "https://app.owned.example/proxy?url=REDACTED", Parameter: "url", HazardClass: "ssrf_candidate", Severity: "high"},
+		},
+	}
+
+	cp = enrichHostFindings(cp, "t1")
+	cp = enrichPortFindings(cp, "t1")
+	cp = enrichServiceFindings(cp, "t1")
+	cp = enrichEndpointFindings(cp, "t1")
+	cp = enrichHazardFindings(cp, "t1")
+
+	categories := map[string]int{}
+	for _, f := range cp.Findings {
+		categories[f.Category]++
+	}
+
+	if categories["host"] < 1 {
+		t.Fatalf("expected host finding, got: %+v", categories)
+	}
+	if categories["port"] < 2 {
+		t.Fatalf("expected port findings, got: %+v", categories)
+	}
+	if categories["endpoint"] < 1 {
+		t.Fatalf("expected endpoint finding, got: %+v", categories)
+	}
+	if categories["hazard"] < 1 {
+		t.Fatalf("expected hazard finding, got: %+v", categories)
+	}
+
+	// Verify minute fields on port finding
+	var portFinding *Finding
+	for i := range cp.Findings {
+		if cp.Findings[i].Category == "port" && cp.Findings[i].Port == 443 {
+			portFinding = &cp.Findings[i]
+			break
+		}
+	}
+	if portFinding == nil || len(portFinding.Technologies) == 0 || portFinding.StageName != "HTTP probing" {
+		t.Fatalf("expected enriched port finding, got: %+v", portFinding)
+	}
+}
+
+func TestScanStepFindingsLoggedAndPublished(t *testing.T) {
+	s := &Server{}
+	sc := &Scan{
+		ID:       "scan-xyz-123",
+		TargetID: "t1",
+		Checkpoint: Checkpoint{
+			Findings: []Finding{
+				{
+					Host:        "api.example.com",
+					Template:    "port-443",
+					Port:        443,
+					Category:    "port",
+					Severity:    "info",
+					Title:       "Exposed HTTPS Service: 443/tcp",
+					StageName:   "HTTP probing",
+					Tool:        "httpx",
+					StepLog:     "httpx probed 1 endpoint: HTTP 200 OK, title 'API Gateway'",
+					StepSuccess: true,
+				},
+			},
+		},
+	}
+	s.publishScanFindings(sc, "2026-10-18T12:00:00Z")
+	if len(s.state.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(s.state.Findings))
+	}
+	f := s.state.Findings[0]
+	if f.ScanID != "scan-xyz-123" {
+		t.Errorf("expected ScanID scan-xyz-123, got %s", f.ScanID)
+	}
+	if f.StepLog != "httpx probed 1 endpoint: HTTP 200 OK, title 'API Gateway'" {
+		t.Errorf("expected step log to be preserved, got %s", f.StepLog)
+	}
+	if !f.StepSuccess {
+		t.Errorf("expected stepSuccess to be true")
+	}
+	if len(f.Notes) == 0 {
+		t.Fatalf("expected audit note logging step success, got none")
+	}
+	if f.Notes[0].Actor != "Scanner (httpx)" {
+		t.Errorf("expected actor 'Scanner (httpx)', got %s", f.Notes[0].Actor)
+	}
+}

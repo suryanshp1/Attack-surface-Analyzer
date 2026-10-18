@@ -37,6 +37,21 @@ func TestCooldownCannotBeShortenedBySuccess(t *testing.T) {
 		t.Fatal("request admitted during cooldown")
 	}
 }
+func TestForbiddenDoesNotTriggerCooldown(t *testing.T) {
+	g := trafficGovernor{}
+	g.observe("domain", 403, "")
+	slot := g.slots["domain"]
+	if slot != nil && !slot.cooldown.IsZero() && time.Until(slot.cooldown) > 0 {
+		t.Fatalf("HTTP 403 triggered unexpected cooldown until %s", slot.cooldown)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	release, err := g.acquire(ctx, "domain")
+	if err != nil {
+		t.Fatalf("request blocked after 403 response: %v", err)
+	}
+	release()
+}
 func TestTrafficConcurrencyAndCancellation(t *testing.T) {
 	g := trafficGovernor{interval: time.Nanosecond, concurrency: 1}
 	release, err := g.acquire(context.Background(), "domain")

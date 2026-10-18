@@ -63,22 +63,34 @@ type Asset struct {
 	Blocked      bool       `json:"blocked"`
 }
 type Finding struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	Severity     string `json:"severity"`
-	Host         string `json:"host"`
-	Status       string `json:"status"`
-	Template     string `json:"template"`
-	FirstSeen    string `json:"firstSeen"`
-	LastSeen     string `json:"lastSeen"`
-	Description  string `json:"description"`
-	Remediation  string `json:"remediation"`
-	Evidence     string `json:"evidence"`
-	Notes        []Note `json:"notes"`
-	MatchedAt    string `json:"matchedAt"`
-	TargetID     string `json:"targetId"`
-	EvidenceKey  string `json:"evidenceKey"`
-	MissingScans int    `json:"missingScans"`
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Severity     string   `json:"severity"`
+	Host         string   `json:"host"`
+	Status       string   `json:"status"`
+	Template     string   `json:"template"`
+	FirstSeen    string   `json:"firstSeen"`
+	LastSeen     string   `json:"lastSeen"`
+	Description  string   `json:"description"`
+	Remediation  string   `json:"remediation"`
+	Evidence     string   `json:"evidence"`
+	Notes        []Note   `json:"notes"`
+	MatchedAt    string   `json:"matchedAt"`
+	TargetID     string   `json:"targetId"`
+	EvidenceKey  string   `json:"evidenceKey"`
+	MissingScans int      `json:"missingScans"`
+	Category     string   `json:"category,omitempty"`
+	Port         int      `json:"port,omitempty"`
+	Protocol     string   `json:"protocol,omitempty"`
+	Method       string   `json:"method,omitempty"`
+	Parameters   []string `json:"parameters,omitempty"`
+	StageName    string   `json:"stageName,omitempty"`
+	Tool         string   `json:"tool,omitempty"`
+	Technologies []string `json:"technologies,omitempty"`
+	IP           string   `json:"ip,omitempty"`
+	ScanID       string   `json:"scanId,omitempty"`
+	StepLog      string   `json:"stepLog,omitempty"`
+	StepSuccess  bool     `json:"stepSuccess,omitempty"`
 }
 type Note struct {
 	Text  string `json:"text"`
@@ -225,6 +237,21 @@ type Server struct {
 	requestActor    string
 	mcpOnce         sync.Once
 	mcpHandler      http.Handler
+	changeCh        chan struct{}
+}
+
+func (s *Server) changeChannel() chan struct{} {
+	if s.changeCh == nil {
+		s.changeCh = make(chan struct{})
+	}
+	return s.changeCh
+}
+
+func (s *Server) broadcast() {
+	if s.changeCh != nil {
+		close(s.changeCh)
+	}
+	s.changeCh = make(chan struct{})
 }
 
 func id() string {
@@ -247,7 +274,11 @@ func (s *Server) auditActor(action, detail, actor string) {
 }
 func (s *Server) save() error {
 	if s.db != nil {
-		return s.saveRelational()
+		if err := s.saveRelational(); err != nil {
+			return err
+		}
+		s.broadcast()
+		return nil
 	}
 	b, err := json.Marshal(s.state)
 	if err != nil {
@@ -260,7 +291,11 @@ func (s *Server) save() error {
 	if err = os.WriteFile(s.file+".tmp", b, 0600); err != nil {
 		return err
 	}
-	return os.Rename(s.file+".tmp", s.file)
+	if err = os.Rename(s.file+".tmp", s.file); err != nil {
+		return err
+	}
+	s.broadcast()
+	return nil
 }
 func respond(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -1036,6 +1071,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		b, _ := json.Marshal(s.publicStateFor(actor))
+		ch := s.changeChannel()
 		s.mu.Unlock()
 		if !bytes.Equal(previous, b) {
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
@@ -1051,11 +1087,16 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			lastSent = time.Now()
 			f.Flush()
 		}
+		var serverCtxDone <-chan struct{}
+		if s.ctx != nil {
+			serverCtxDone = s.ctx.Done()
+		}
 		select {
 		case <-r.Context().Done():
 			return
-		case <-s.ctx.Done():
+		case <-serverCtxDone:
 			return
+		case <-ch:
 		case <-ticker.C:
 		}
 	}

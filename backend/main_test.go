@@ -333,4 +333,3 @@ func TestNormalizeIngestsPostureAndTakeovers(t *testing.T) {
 		t.Fatalf("hazards not normalized: %+v", s.state.Hazards)
 	}
 }
-

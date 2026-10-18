@@ -304,7 +304,7 @@ func nucleiParallelism(sc Scan, workers, templates int) (rate, templateConc, hos
 	workers = max(1, workers)
 	rate = max(1, sc.Rate/workers)
 	perWorker := max(1, scanConcurrency(sc, 10)/workers)
-	templateConc = max(1, min(templates, 2, perWorker))
+	templateConc = max(1, min(templates, perWorker))
 	hostConc = max(1, perWorker/templateConc)
 	return rate, templateConc, hostConc
 }
