@@ -130,6 +130,12 @@ svg {
   padding: 34px 16px 16px;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.sidebar > * {
+  flex-shrink: 0;
 }
 .brand-link {
   display: block;
@@ -280,6 +286,7 @@ svg {
 .sidebar-bottom {
   margin-top: auto;
   padding-top: 40px;
+  flex-shrink: 0;
 }
 .scope-note {
   display: flex;
