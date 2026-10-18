@@ -45,7 +45,25 @@ type trafficGovernor struct {
 	sequence    uint64
 }
 
+type trafficPolicy struct {
+	interval time.Duration
+	limit    int
+}
+
+// Signed permits carry the scan's configured budget; legacy permits keep the
+// conservative 2 req/s, 2-concurrent default.
+func permitTrafficPolicy(p Permit) trafficPolicy {
+	if p.Rate <= 0 {
+		return trafficPolicy{}
+	}
+	return trafficPolicy{interval: time.Second / time.Duration(min(max(p.Rate, 1), 30)), limit: min(max(p.Concurrency, 1), 10)}
+}
+
 func (g *trafficGovernor) acquire(ctx context.Context, key string) (func(), error) {
+	return g.acquirePolicy(ctx, key, trafficPolicy{interval: g.interval, limit: g.concurrency})
+}
+
+func (g *trafficGovernor) acquirePolicy(ctx context.Context, key string, p trafficPolicy) (func(), error) {
 	for {
 		g.mu.Lock()
 		if g.slots == nil {
@@ -64,11 +82,17 @@ func (g *trafficGovernor) acquire(ctx context.Context, key string) (func(), erro
 			slot = &trafficSlot{}
 			g.slots[key] = slot
 		}
-		interval := g.interval
+		interval := p.interval
+		if interval <= 0 {
+			interval = g.interval
+		}
 		if interval <= 0 {
 			interval = 500 * time.Millisecond
 		}
-		limit := g.concurrency
+		limit := p.limit
+		if limit <= 0 {
+			limit = g.concurrency
+		}
 		if limit <= 0 {
 			limit = 2
 		}
@@ -81,17 +105,17 @@ func (g *trafficGovernor) acquire(ctx context.Context, key string) (func(), erro
 			slot.touched = now
 			// Small added jitter spreads arrivals without raising the configured rate.
 			g.sequence++
-			slot.next = now.Add(interval + time.Duration(g.sequence%101)*time.Millisecond)
+			slot.next = now.Add(interval + time.Duration(g.sequence%11)*interval/100)
 			g.mu.Unlock()
 			var once sync.Once
 			return func() { once.Do(func() { g.mu.Lock(); slot.active--; g.mu.Unlock() }) }, nil
 		}
 		delay := time.Until(ready)
-		if delay < 25*time.Millisecond {
-			delay = 25 * time.Millisecond
+		if delay < 5*time.Millisecond {
+			delay = 5 * time.Millisecond
 		}
-		if delay > time.Second {
-			delay = time.Second
+		if delay > min(interval, time.Second) {
+			delay = min(interval, time.Second)
 		}
 		g.mu.Unlock()
 		timer := time.NewTimer(delay)

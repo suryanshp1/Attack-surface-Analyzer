@@ -65,10 +65,12 @@ type Claim struct {
 	DNS    string `json:"dns"`
 }
 type Permit struct {
-	Scan    string `json:"scan"`
-	Root    string `json:"root"`
-	Expires int64  `json:"expires"`
-	Lease   string `json:"lease"`
+	Scan        string `json:"scan"`
+	Root        string `json:"root"`
+	Expires     int64  `json:"expires"`
+	Lease       string `json:"lease"`
+	Rate        int    `json:"rate,omitempty"`
+	Concurrency int    `json:"concurrency,omitempty"`
 }
 
 func signPermit(p Permit, secret string) string {
@@ -433,7 +435,7 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 			if dns == "" {
 				dns = "172.30.88.3:5353"
 			}
-			respond(w, 200, Claim{*sc, *target, signPermit(Permit{sc.ID, sc.Domain, time.Now().Add(62 * time.Minute).Unix(), sc.Lease}, s.gatewaySecret), proxy, dns})
+			respond(w, 200, Claim{*sc, *target, signPermit(Permit{Scan: sc.ID, Root: sc.Domain, Expires: time.Now().Add(62 * time.Minute).Unix(), Lease: sc.Lease, Rate: sc.Rate, Concurrency: sc.Concurrency}, s.gatewaySecret), proxy, dns})
 			return
 		}
 		if claimChanged && !save() {

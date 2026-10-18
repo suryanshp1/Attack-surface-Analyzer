@@ -48,6 +48,8 @@ type Gateway struct {
 	lookup      func(context.Context, string) ([]netip.Addr, error)
 	dial        func(context.Context, string, string) (net.Conn, error)
 	authorize   func(context.Context, string) bool
+	authMu      sync.Mutex
+	authUntil   map[string]time.Time
 }
 
 func (g *Gateway) safeDial(ctx context.Context, network, address string) (net.Conn, error) {
@@ -121,6 +123,36 @@ func (g *Gateway) active(ctx context.Context, permit string) bool {
 	defer res.Body.Close()
 	return res.StatusCode == 200
 }
+
+func (g *Gateway) activeCached(ctx context.Context, permit string) bool {
+	g.authMu.Lock()
+	if g.authUntil != nil {
+		if until, ok := g.authUntil[permit]; ok && time.Now().Before(until) {
+			g.authMu.Unlock()
+			return true
+		}
+	}
+	g.authMu.Unlock()
+	ok := g.active(ctx, permit)
+	if ok {
+		g.authMu.Lock()
+		if g.authUntil == nil {
+			g.authUntil = map[string]time.Time{}
+		}
+		if len(g.authUntil) >= 4096 {
+			now := time.Now()
+			for k, v := range g.authUntil {
+				if now.After(v) {
+					delete(g.authUntil, k)
+				}
+			}
+		}
+		g.authUntil[permit] = time.Now().Add(2 * time.Second)
+		g.authMu.Unlock()
+	}
+	return ok
+}
+
 func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/health" && r.Method == "GET" && !r.URL.IsAbs() {
 		respond(w, 200, map[string]string{"status": "ok"})
@@ -198,14 +230,22 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		defer releaseTunnel()
 	}
-	release, err := g.traffic.acquire(r.Context(), key)
+	policy := trafficPolicy{}
+	if !providers[host] {
+		policy = permitTrafficPolicy(permit)
+	}
+	waitStart := time.Now()
+	release, err := g.traffic.acquirePolicy(r.Context(), key, policy)
 	if err != nil {
 		http.Error(w, "Traffic wait canceled", 503)
 		return
 	}
 	defer release()
+	if wait := time.Since(waitStart); wait > time.Second {
+		Log(r.Context()).Info("gateway_admission_wait", "root", key, "wait_ms", wait.Milliseconds())
+	}
 	// A queued request must still have a live scan lease when it is admitted.
-	if !g.active(r.Context(), parts[1]) {
+	if !g.activeCached(r.Context(), parts[1]) {
 		http.Error(w, "Scan canceled while waiting", 403)
 		return
 	}

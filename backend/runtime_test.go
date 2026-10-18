@@ -31,7 +31,7 @@ func TestDNSRebindingAndScopeGateway(t *testing.T) {
 	if _, err := g.safeDial(context.Background(), "tcp", "owned.com:443"); err == nil || called {
 		t.Fatal("mixed public/private resolution bypassed dial gate")
 	}
-	permit := signPermit(Permit{"scan", "owned.com", time.Now().Add(time.Minute).Unix(), "fixture-lease"}, "secret")
+	permit := signPermit(Permit{Scan: "scan", Root: "owned.com", Expires: time.Now().Add(time.Minute).Unix(), Lease: "fixture-lease"}, "secret")
 	r := httptest.NewRequest("GET", "http://unowned.com/", nil)
 	r.SetBasicAuth("scan", permit)
 	r.Header.Set("Proxy-Authorization", r.Header.Get("Authorization"))
@@ -74,14 +74,14 @@ func TestGatewayDualStackFallback(t *testing.T) {
 	}
 }
 func TestPermitTamperingAndExpiry(t *testing.T) {
-	token := signPermit(Permit{"scan", "owned.com", time.Now().Add(time.Minute).Unix(), "fixture-lease"}, "secret")
+	token := signPermit(Permit{Scan: "scan", Root: "owned.com", Expires: time.Now().Add(time.Minute).Unix(), Lease: "fixture-lease"}, "secret")
 	if _, err := checkPermit(token, "secret"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := checkPermit(token+"x", "secret"); err == nil {
 		t.Fatal("tampered token accepted")
 	}
-	expired := signPermit(Permit{"scan", "owned.com", time.Now().Add(-time.Minute).Unix(), "fixture-lease"}, "secret")
+	expired := signPermit(Permit{Scan: "scan", Root: "owned.com", Expires: time.Now().Add(-time.Minute).Unix(), Lease: "fixture-lease"}, "secret")
 	if _, err := checkPermit(expired, "secret"); err == nil {
 		t.Fatal("expired token accepted")
 	}
