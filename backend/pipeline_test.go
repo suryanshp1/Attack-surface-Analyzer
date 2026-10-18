@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -474,5 +475,19 @@ func TestStageFindingSummaryListsOnlyNewFindings(t *testing.T) {
 	got := stageFindingSummary("Detection", 1, cp)
 	if !strings.HasPrefix(got, "[Findings] Detection: 12 new (13 total).") || !strings.Contains(got, "- f0 (high) on a.owned.example") || strings.Contains(got, "old") || !strings.Contains(got, "2 more in Findings") {
 		t.Fatal(got)
+	}
+}
+
+func TestStreamLinesBoundsLinesAndDropsTornTail(t *testing.T) {
+	var input bytes.Buffer
+	for i := 0; i < 20000; i++ { // ~5 MiB total: above the old aggregate cap
+		input.WriteString(`{"template-id":"x","pad":"` + strings.Repeat("a", 240) + `"}` + "\n")
+	}
+	input.WriteString(strings.Repeat("b", 3<<20) + "\n") // oversized line
+	input.WriteString(`{"template-id":"torn"`)           // killed mid-record
+	count := 0
+	dropped, err := streamLines(&input, 2<<20, func(line []byte) error { count++; return nil })
+	if err != nil || count != 20000 || dropped != 1 {
+		t.Fatal(count, dropped, err)
 	}
 }

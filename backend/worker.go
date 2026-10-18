@@ -445,6 +445,44 @@ func command(ctx context.Context, name string, args []string, proxy, dir string)
 	}
 	return stdout.b.Bytes(), logText, nil
 }
+
+func commandStream(ctx context.Context, name string, args []string, proxy, dir string, onLine func([]byte) error) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "XDG_CONFIG_HOME=" + dir + "/config", "HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "http_proxy=" + proxy, "https_proxy=" + proxy, "NO_PROXY=", "DISABLE_NUCLEI_TEMPLATES_PUBLIC_DOWNLOAD=true"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cmd.WaitDelay = 2 * time.Second
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderr := &boundedBuffer{limit: 32 << 10}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	dropped, streamErr := streamLines(stdout, 2<<20, onLine)
+	waitErr := cmd.Wait()
+	logText := redact(capString(stderr.b.String(), 4000))
+	if dropped > 0 {
+		logText = fmt.Sprintf("%s\nDropped %d oversized scanner output lines.", logText, dropped)
+	}
+	err = errors.Join(streamErr, waitErr)
+	if err != nil {
+		if ctx.Err() != nil {
+			return logText, fmt.Errorf("%s stopped: %w (process: %v) · %s", name, ctx.Err(), err, logText)
+		}
+		return logText, fmt.Errorf("%s failed: %w · %s", name, err, logText)
+	}
+	return logText, nil
+}
+
 func jsonLines(data []byte, parse func([]byte) error) error {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 4096), 2<<20)

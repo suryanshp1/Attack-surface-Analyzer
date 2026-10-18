@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -56,6 +58,15 @@ func (w *Worker) runScanner(ctx context.Context, name string, args []string, pro
 		return w.scannerCommand(ctx, name, args, proxy, dir)
 	}
 	return command(ctx, name, args, proxy, dir)
+}
+
+func (w *Worker) runScannerStream(ctx context.Context, name string, args []string, proxy, dir string, onLine func([]byte) error) (string, error) {
+	if w.scannerCommand != nil {
+		out, logs, err := w.scannerCommand(ctx, name, args, proxy, dir)
+		_, streamErr := streamLines(bytes.NewReader(out), 2<<20, onLine)
+		return logs, errors.Join(err, streamErr)
+	}
+	return commandStream(ctx, name, args, proxy, dir, onLine)
 }
 
 func serviceTemplatesCovered(cp Checkpoint, origin string, templates []string) bool {
@@ -241,4 +252,44 @@ func stageFindingSummary(stage string, before int, cp Checkpoint) string {
 		lines = append(lines, fmt.Sprintf("- %s (%s) on %s", capString(f.Title, 120), f.Severity, f.Host))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// streamLines delivers complete lines as they arrive. Lines over maxLine are
+// dropped and counted; a final fragment is delivered only if it is complete JSON
+// (a killed scanner can tear its last record). It always drains r so the child
+// process never blocks on a full pipe, even after onLine fails.
+func streamLines(r io.Reader, maxLine int, onLine func([]byte) error) (dropped int, err error) {
+	br := bufio.NewReaderSize(r, 64<<10)
+	var buf []byte
+	oversized := false
+	for {
+		chunk, readErr := br.ReadSlice('\n')
+		if !oversized {
+			if len(buf)+len(chunk) > maxLine {
+				oversized, buf = true, buf[:0]
+			} else {
+				buf = append(buf, chunk...)
+			}
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		line := bytes.TrimSpace(buf)
+		if readErr == nil {
+			if oversized {
+				dropped++
+			} else if len(line) > 0 && err == nil {
+				err = onLine(line)
+			}
+			buf, oversized = buf[:0], false
+			continue
+		}
+		if !oversized && len(line) > 0 && json.Valid(line) && err == nil {
+			err = onLine(line)
+		}
+		if !errors.Is(readErr, io.EOF) && err == nil {
+			err = readErr
+		}
+		return dropped, err
+	}
 }
