@@ -196,6 +196,7 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
+		lastOK := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
@@ -203,16 +204,28 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			case <-finished:
 				return
 			case <-ticker.C:
-				if err := w.call(ctx, "/internal/heartbeat", w.payload(sc), nil); err != nil {
+				hbCtx, hbCancel := context.WithTimeout(ctx, 5*time.Second)
+				err := w.call(hbCtx, "/internal/heartbeat", w.payload(sc), nil)
+				hbCancel()
+				if err == nil {
+					lastOK = time.Now()
+					continue
+				}
+				if heartbeatShouldStop(err, lastOK, time.Now()) {
 					log.Printf("lease lost: %v", err)
 					cancel()
 					return
 				}
+				Log(ctx).Warn("worker_heartbeat_retry", "scan_id", sc.ID, "err", err.Error())
 			}
 		}
 	}()
 	workdir, err := os.MkdirTemp("", "surfacer-scan-")
 	if err != nil {
+		Log(ctx).Error("worker_tempdir_failed", "scan_id", sc.ID, "err", err.Error())
+		releaseCtx, release := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+		defer release()
+		_ = w.call(releaseCtx, "/internal/release", w.payload(sc), nil)
 		return
 	}
 	defer os.RemoveAll(workdir)
@@ -222,6 +235,10 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 	}
 	proxy, err := scannerProxy(ctx, claim.Proxy, lookupProxy)
 	if err != nil {
+		Log(ctx).Error("worker_proxy_failed", "scan_id", sc.ID, "err", err.Error())
+		releaseCtx, release := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+		defer release()
+		_ = w.call(releaseCtx, "/internal/release", w.payload(sc), nil)
 		return
 	}
 	claim.Proxy = proxy.String()
@@ -370,7 +387,7 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			p["log"] = logs
 			Log(ctx).Warn("worker_stage_skipped_error", "scan_id", sc.ID, "stage", sc.Stages[stage].Name, "err", err.Error())
 		}
-		if e := w.call(ctx, "/internal/stage", p, nil); e != nil {
+		if e := w.commitStage(ctx, p); e != nil {
 			log.Printf("stage commit: %v", e)
 			return
 		}

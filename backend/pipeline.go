@@ -164,16 +164,7 @@ func (w *Worker) checkpoint(ctx context.Context, c Claim, name string, cp Checkp
 		var err error
 		for attempt := 0; attempt < 3; attempt++ {
 			err = w.call(commitCtx, "/internal/stage", payload, nil)
-			if err == nil {
-				return nil
-			}
-			var apiErr *workerAPIError
-			var networkErr net.Error
-			if errors.As(err, &apiErr) {
-				if apiErr.status < 500 {
-					return err
-				}
-			} else if !errors.As(err, &networkErr) {
+			if err == nil || !retryableWorkerError(err) {
 				return err
 			}
 			timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
@@ -187,6 +178,51 @@ func (w *Worker) checkpoint(ctx context.Context, c Claim, name string, cp Checkp
 		return err
 	}
 	return nil
+}
+
+func retryableWorkerError(err error) bool {
+	var apiErr *workerAPIError
+	if errors.As(err, &apiErr) {
+		return apiErr.status >= 500
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
+// The API lease is 30 s; stop well before it lapses so a replacement worker
+// never overlaps with this one.
+const heartbeatSafetyWindow = 20 * time.Second
+
+func heartbeatShouldStop(err error, lastOK, now time.Time) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *workerAPIError
+	if errors.As(err, &apiErr) && apiErr.status < 500 {
+		return true
+	}
+	return now.Sub(lastOK) > heartbeatSafetyWindow
+}
+
+// commitStage retries transient failures. Re-sending a completed stage is
+// accepted by the API and stored under the same content-addressed evidence key.
+func (w *Worker) commitStage(ctx context.Context, payload map[string]any) error {
+	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer cancel()
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		if err = w.call(commitCtx, "/internal/stage", payload, nil); err == nil || !retryableWorkerError(err) {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 250 * time.Millisecond)
+		select {
+		case <-commitCtx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
+	return err
 }
 
 // stageFindingSummary leads the stage log so the 4,000-char log cap truncates
