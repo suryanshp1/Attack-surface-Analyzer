@@ -377,7 +377,12 @@ func dnsRelay(ctx context.Context, address string) {
 			continue
 		}
 		q, err := parser.Question()
-		if err != nil || q.Class != dnsmessage.ClassINET || q.Type != dnsmessage.TypeA && q.Type != dnsmessage.TypeAAAA && q.Type != dnsmessage.TypeTXT && q.Type != dnsmessage.TypeCNAME {
+		if err != nil || q.Class != dnsmessage.ClassINET ||
+			(q.Type != dnsmessage.TypeA &&
+				q.Type != dnsmessage.TypeAAAA &&
+				q.Type != dnsmessage.TypeTXT &&
+				q.Type != dnsmessage.TypeCNAME &&
+				q.Type != dnsmessage.TypeMX) {
 			continue
 		}
 		select {
@@ -387,7 +392,11 @@ func dnsRelay(ctx context.Context, address string) {
 		}
 		go func(packet []byte, peer net.Addr) {
 			defer func() { <-semaphore }()
-			up, e := net.DialTimeout("udp", "1.1.1.1:53", 3*time.Second)
+			upstream := os.Getenv("EGRESS_DNS")
+			if upstream == "" {
+				upstream = "1.1.1.1:53"
+			}
+			up, e := net.DialTimeout("udp", upstream, 3*time.Second)
 			if e != nil {
 				return
 			}
