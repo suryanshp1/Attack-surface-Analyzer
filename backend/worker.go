@@ -73,7 +73,7 @@ func (w *Worker) call(ctx context.Context, path string, payload any, result any)
 	defer res.Body.Close()
 	if res.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 4000))
-		return fmt.Errorf("API %d: %s", res.StatusCode, b)
+		return &workerAPIError{status: res.StatusCode, message: redact(string(b))}
 	}
 	if result != nil {
 		return json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(result)
@@ -234,6 +234,13 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 		err     error
 	}
 	var histCh chan historicalResult
+	var histDone chan struct{}
+	defer func() {
+		cancel()
+		if histDone != nil {
+			<-histDone
+		}
+	}()
 	for stage := range sc.Stages {
 		if sc.Stages[stage].Status == "completed" {
 			continue
@@ -245,15 +252,10 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 		if err = w.call(ctx, "/internal/stage", p, nil); err != nil {
 			return
 		}
-		stageBudget := 7 * time.Minute
-		if sc.Stages[stage].Name == "Port discovery" {
-			stageBudget = portStageTimeout(cp, sc.Rate)
-		}
-		if sc.Stages[stage].Name == "Endpoint crawling" {
-			stageBudget = crawlStageTimeout(cp)
-		}
+		stageBudget := scanStageBudget(ctx, sc, stage, cp)
 		stageCtx, stop := context.WithTimeout(ctx, stageBudget)
 		blockedBefore := len(cp.Blocked)
+		findingsBefore := len(cp.Findings)
 		logs := ""
 		stageStart := time.Now()
 		switch sc.Stages[stage].Name {
@@ -263,7 +265,9 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			cp, logs, err = w.resolve(stageCtx, claim, cp, workdir)
 			if err == nil && histCh == nil {
 				histCh = make(chan historicalResult, 1)
+				histDone = make(chan struct{})
 				go func() {
+					defer close(histDone)
 					hCtx, hCancel := context.WithTimeout(ctx, 7*time.Minute)
 					defer hCancel()
 					hCp, hLogs, hErr := w.historical(hCtx, claim, Checkpoint{}, proxyURL, workdir)
@@ -276,7 +280,12 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			cp, logs, err = w.assessTLS(stageCtx, claim, cp, workdir)
 		case "Historical discovery":
 			if histCh != nil {
-				res := <-histCh
+				var res historicalResult
+				select {
+				case res = <-histCh:
+				case <-stageCtx.Done():
+					res.err = stageCtx.Err()
+				}
 				cp.History = append(cp.History, res.history...)
 				cp.SourceIssues = append(cp.SourceIssues, res.issues...)
 				logs = res.logs
@@ -287,14 +296,31 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 		case "HTTP probing":
 			cp, logs, err = w.probe(stageCtx, claim, cp, proxyURL, workdir)
 		case "TLS inspection":
-			cp, logs, err = w.inspectCertificates(stageCtx, cp, proxyURL, sc.ID, sc.Rate)
+			cp, logs, err = w.inspectCertificates(stageCtx, cp, proxyURL, sc.ID, sc.Rate, sc.Concurrency)
 		case "Endpoint crawling":
 			cp, logs, err = w.crawl(stageCtx, claim, cp, proxyURL, workdir)
+			var allEndpoints []Endpoint
+			for _, a := range cp.Assets {
+				allEndpoints = append(allEndpoints, a.Endpoints...)
+			}
+			allEndpoints = append(allEndpoints, cp.History...)
+			cp.Hazards = ClassifyEndpointHazards(allEndpoints, sc.ID)
+			if len(cp.Hazards) > 0 {
+				logs += fmt.Sprintf("\n%d endpoint parameter hazards classified.", len(cp.Hazards))
+			}
 		case "JavaScript secrets":
 			cp, logs, err = w.analyzeJavaScript(stageCtx, claim, cp, proxyURL, workdir)
 		case "Detection":
 			cp, logs, err = w.detect(stageCtx, claim, cp, proxyURL, workdir)
 		case "Normalization":
+			if len(cp.Hazards) == 0 {
+				var allEndpoints []Endpoint
+				for _, a := range cp.Assets {
+					allEndpoints = append(allEndpoints, a.Endpoints...)
+				}
+				allEndpoints = append(allEndpoints, cp.History...)
+				cp.Hazards = ClassifyEndpointHazards(allEndpoints, sc.ID)
+			}
 			err = validateCheckpoint(cp, claim.Target.Domain)
 			logs = "Results normalized with stable fingerprints and redacted evidence."
 		case "Change detection":
@@ -303,6 +329,9 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			err = fmt.Errorf("unsupported scan stage: %s", sc.Stages[stage].Name)
 		}
 		stageDur := time.Since(stageStart)
+		if errors.Is(err, context.DeadlineExceeded) {
+			GlobalTelemetry.RecordStageTimeout()
+		}
 		GlobalTelemetry.RecordStageDuration(sc.Stages[stage].Name, stageDur)
 		if err != nil {
 			Log(ctx).Error("worker_stage_failed", "scan_id", sc.ID, "stage", sc.Stages[stage].Name, "duration_ms", stageDur.Milliseconds(), "err", err.Error())
@@ -310,23 +339,29 @@ func (w *Worker) execute(parent context.Context, claim Claim) {
 			Log(ctx).Info("worker_stage_completed", "scan_id", sc.ID, "stage", sc.Stages[stage].Name, "duration_ms", stageDur.Milliseconds())
 		}
 		stop()
-		if parent.Err() != nil {
-			releaseCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = w.call(releaseCtx, "/internal/release", w.payload(sc), nil)
-			c()
-			return
-		}
 		if ctx.Err() != nil {
+			setStageIssue(&cp, sc.Stages[stage].Name, ctx.Err())
+			if e := w.checkpoint(ctx, claim, sc.Stages[stage].Name, cp, "Worker stopped; observations checkpointed for resume."); e != nil {
+				log.Printf("interrupted checkpoint: %v", e)
+				return // Leave the lease to expire; never release uncommitted observations.
+			}
+			releaseCtx, release := context.WithTimeout(context.Background(), 5*time.Second)
+			defer release()
+			if e := w.call(releaseCtx, "/internal/release", w.payload(sc), nil); e != nil {
+				log.Printf("release: %v", e)
+			}
 			return
 		}
 		p = w.payload(sc)
 		p["stage"] = stage
 		p["checkpoint"] = cp
+		logs = stageFindingSummary(sc.Stages[stage].Name, findingsBefore, cp) + "\n" + logs
 		if len(cp.Blocked) > blockedBefore {
 			logs += fmt.Sprintf("\nIncomplete host coverage: %v", dedupeStrings(cp.Blocked[blockedBefore:]))
 		}
 		p["log"] = logs
-		p["status"] = "completed"
+		p["status"] = "completed" // Execution pass finished; coverage is tracked separately.
+		setStageIssue(&cp, sc.Stages[stage].Name, err)
 		if err != nil {
 			issue := fmt.Sprintf("Stage %s encountered issue: %v. Downstream stages continue.", sc.Stages[stage].Name, err)
 			cp.SourceIssues = append(cp.SourceIssues, issue)
@@ -413,17 +448,18 @@ func writeList(dir, name string, values []string) (string, error) {
 	return path, err
 }
 func (w *Worker) discover(ctx context.Context, c Claim, cp Checkpoint, proxy, dir string) (Checkpoint, string, error) {
-	output, logs, err := command(ctx, "subfinder", []string{"-d", c.Target.Domain, "-sources", "crtsh,hackertarget,rapiddns", "-oJ", "-cs", "-silent", "-duc", "-proxy", proxy, "-rl", "5", "-timeout", "20", "-max-time", "4"}, proxy, dir)
-	if err != nil {
-		return cp, logs, err
+	output, logs, runErr := w.runScanner(ctx, "subfinder", []string{"-d", c.Target.Domain, "-sources", "crtsh,hackertarget,rapiddns", "-oJ", "-cs", "-silent", "-duc", "-proxy", proxy, "-rl", "5", "-timeout", "20", "-max-time", "4"}, proxy, dir)
+	output = completeScannerRecords(output, runErr)
+	if cp.Hosts == nil {
+		cp.Hosts = map[string][]string{}
 	}
-	cp.Hosts = map[string][]string{c.Target.Domain: {"verified root"}}
+	cp.Hosts[c.Target.Domain] = []string{"selected root"}
 	for _, h := range cp.Known {
 		if inScope(h, c.Target.Domain) {
 			cp.Hosts[h] = []string{"previous inventory"}
 		}
 	}
-	err = jsonLines(output, func(b []byte) error {
+	err := jsonLines(output, func(b []byte) error {
 		var result struct {
 			Host    string   `json:"host"`
 			Source  string   `json:"source"`
@@ -446,7 +482,25 @@ func (w *Worker) discover(ctx context.Context, c Claim, cp Checkpoint, proxy, di
 		cp.Hosts[h] = sources
 		return nil
 	})
-	return cp, fmt.Sprintf("%d in-scope names discovered. %s", len(cp.Hosts), logs), err
+	var currentSubdomains []string
+	for h := range cp.Hosts {
+		currentSubdomains = append(currentSubdomains, h)
+	}
+	remainingBudget := 1000 - len(cp.Hosts)
+	mutationsCount := 0
+	if remainingBudget > 0 {
+		mutations := GenerateDNSMutations(currentSubdomains, c.Target.Domain, min(remainingBudget, 500))
+		for _, m := range mutations {
+			if len(cp.Hosts) >= 1000 {
+				break
+			}
+			if _, exists := cp.Hosts[m]; !exists {
+				cp.Hosts[m] = []string{"mutation"}
+				mutationsCount++
+			}
+		}
+	}
+	return cp, fmt.Sprintf("%d in-scope names discovered (%d predictive mutations generated). %s", len(cp.Hosts), mutationsCount, logs), errors.Join(runErr, err)
 }
 func (w *Worker) resolve(ctx context.Context, c Claim, cp Checkpoint, dir string) (Checkpoint, string, error) {
 	hosts := []string{}
@@ -458,10 +512,8 @@ func (w *Worker) resolve(ctx context.Context, c Claim, cp Checkpoint, dir string
 	if err != nil {
 		return cp, "", err
 	}
-	output, logs, err := command(ctx, "dnsx", []string{"-l", input, "-a", "-aaaa", "-j", "-silent", "-duc", "-r", c.DNS, "-rl", strconv.Itoa(c.Scan.Rate), "-t", strconv.Itoa(c.Scan.Concurrency), "-retry", "2", "-timeout", "5"}, "", dir)
-	if err != nil {
-		return cp, logs, err
-	}
+	output, logs, runErr := w.runScanner(ctx, "dnsx", []string{"-l", input, "-a", "-aaaa", "-j", "-silent", "-duc", "-r", c.DNS, "-rl", strconv.Itoa(c.Scan.Rate), "-t", strconv.Itoa(c.Scan.Concurrency), "-retry", "2", "-timeout", "5"}, "", dir)
+	output = completeScannerRecords(output, runErr)
 	cp.DNS = map[string][]string{}
 	err = jsonLines(output, func(b []byte) error {
 		var result struct {
@@ -479,9 +531,20 @@ func (w *Worker) resolve(ctx context.Context, c Claim, cp Checkpoint, dir string
 	})
 	cp.Assets = []Asset{}
 	cp.Blocked = []string{}
-	resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "udp", c.DNS)
-	}}
+	// Fallback resolution, takeover checks and governance share gateway DNS pacing.
+	gwResolver := makeSafeGatewayResolver(c.DNS)
+	dnsPacing := time.NewTicker(time.Second / time.Duration(max(1, c.Scan.Rate)))
+	defer dnsPacing.Stop()
+	dialDNS := gwResolver.Dial
+	gwResolver.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-dnsPacing.C:
+		}
+		return dialDNS(ctx, network, address)
+	}
+	resolver := gwResolver
 	var unresolved []string
 	for _, h := range hosts {
 		if len(cp.DNS[h]) == 0 {
@@ -490,7 +553,7 @@ func (w *Worker) resolve(ctx context.Context, c Claim, cp Checkpoint, dir string
 	}
 	if len(unresolved) > 0 {
 		var mu sync.Mutex
-		workers := min(len(unresolved), 20)
+		workers := min(len(unresolved), scanConcurrency(c.Scan, 10))
 		ch := make(chan string, len(unresolved))
 		for _, h := range unresolved {
 			ch <- h
@@ -543,7 +606,15 @@ func (w *Worker) resolve(ctx context.Context, c Claim, cp Checkpoint, dir string
 		}
 		cp.Assets = append(cp.Assets, a)
 	}
-	return cp, fmt.Sprintf("%d resolved names; %d blocked non-public destinations. %s", len(cp.Assets), len(cp.Blocked), logs), err
+
+	takeovers, takeoverErr := evaluateTakeovers(ctx, c.Scan, hosts, func(ctx context.Context, host string) (*SubdomainTakeover, error) {
+		return EvaluateSubdomainTakeover(ctx, gwResolver, host, c.Target.Domain, c.Scan.ID)
+	})
+	cp.Takeovers = takeovers
+	gov := EvaluateDNSGovernance(ctx, gwResolver, c.Target.Domain, c.Scan.ID)
+	cp.DNSPosture = &gov
+
+	return cp, fmt.Sprintf("%d resolved names; %d blocked non-public destinations. %s", len(cp.Assets), len(cp.Blocked), logs), errors.Join(runErr, err, takeoverErr, ctx.Err())
 }
 func (w *Worker) probe(ctx context.Context, c Claim, cp Checkpoint, proxy, dir string) (Checkpoint, string, error) {
 	hosts := []string{}
@@ -705,7 +776,7 @@ func (w *Worker) probe(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 	}
 	return cp, fmt.Sprintf("%d live web hosts identified. %s", live, logs), err
 }
-func (w *Worker) inspectCertificates(ctx context.Context, cp Checkpoint, proxy, scanID string, rate int) (Checkpoint, string, error) {
+func (w *Worker) inspectCertificates(ctx context.Context, cp Checkpoint, proxy, scanID string, rate int, concurrency ...int) (Checkpoint, string, error) {
 	p, err := url.Parse(proxy)
 	if err != nil {
 		return cp, "", err
@@ -724,13 +795,17 @@ func (w *Worker) inspectCertificates(ctx context.Context, cp Checkpoint, proxy, 
 	var tasks []inspectTask
 	for i := range cp.Assets {
 		a := &cp.Assets[i]
-		if !a.Blocked && a.URL != "" {
+		if !a.Blocked && a.URL != "" && a.TLS == "" {
 			tasks = append(tasks, inspectTask{index: i, host: a.Host, url: a.URL})
 		}
 	}
 	if len(tasks) > 0 {
 		var mu sync.Mutex
-		workers := max(2, min(len(tasks), min(rate, 8)))
+		limit := 5
+		if len(concurrency) > 0 {
+			limit = max(1, concurrency[0])
+		}
+		workers := min(len(tasks), min(limit, 8))
 		taskCh := make(chan inspectTask, len(tasks))
 		for _, t := range tasks {
 			taskCh <- t
@@ -837,18 +912,18 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 		}
 		manifest.Templates = kept
 	}
-	cp.ServiceCoverage = map[string][]string{}
+	if cp.ServiceCoverage == nil {
+		cp.ServiceCoverage = map[string][]string{}
+	}
 	cp.Coverage = map[string][]string{}
 	for h, rules := range cp.SecretCoverage {
 		cp.Coverage[h] = append(cp.Coverage[h], rules...)
 	}
-	kept := []Finding{}
-	for _, f := range cp.Findings {
-		if strings.HasPrefix(f.Template, "tls-") || strings.HasPrefix(f.Template, "gitleaks:") {
-			kept = append(kept, f)
+	for origin, rules := range cp.ServiceCoverage {
+		if u, e := url.Parse(origin); e == nil {
+			cp.Coverage[u.Hostname()] = append(cp.Coverage[u.Hostname()], rules...)
 		}
 	}
-	cp.Findings = kept
 	for _, a := range cp.Assets {
 		if a.TLS != "" && !a.Blocked {
 			cp.Coverage[a.Host] = append(cp.Coverage[a.Host], "tls-expiry")
@@ -892,15 +967,88 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 		}
 		paths[key] = ids
 	}
-	logs := []string{}
-	for templates, urls := range groups {
-		input, e := writeList(dir, "urls-"+fingerprint(templates)+".txt", urls)
-		if e != nil {
-			return cp, "", e
+	type detectionBatch struct {
+		templates          string
+		urls, origins, ids []string
+		index              int
+	}
+	type detectionResult struct {
+		batch  detectionBatch
+		output []byte
+		logs   string
+		err    error
+	}
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var batches []detectionBatch
+	for _, templates := range keys {
+		urls := dedupeStrings(groups[templates])
+		sort.Strings(urls)
+		var pending []string
+		for _, raw := range urls {
+			if !serviceTemplatesCovered(cp, serviceOrigin(raw), paths[templates]) {
+				pending = append(pending, raw)
+			}
 		}
-		output, logText, e := command(ctx, "nuclei", []string{"-l", input, "-t", templates, "-jsonl", "-silent", "-duc", "-disable-unsigned-templates", "-etags", "dos,intrusive,fuzz,bruteforce", "-no-interactsh", "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "detection"), "-rl", strconv.Itoa(c.Scan.Rate), "-c", "1", "-pc", "1", "-bs", strconv.Itoa(c.Scan.Concurrency), "-timeout", "10", "-retries", "1", "-response-size-read", "65536", "-include-rr", "-matcher-status"}, proxy, dir)
-		logs = append(logs, logText)
-		parseErr := jsonLines(output, func(b []byte) error {
+		for offset := 0; offset < len(pending); offset += 10 {
+			urls := pending[offset:min(offset+10, len(pending))]
+			origins := make([]string, 0, len(urls))
+			for _, raw := range urls {
+				origins = append(origins, serviceOrigin(raw))
+			}
+			batches = append(batches, detectionBatch{templates, urls, origins, paths[templates], len(batches)})
+		}
+	}
+	findingKeys := map[string]bool{}
+	for _, f := range cp.Findings {
+		findingKeys[fingerprint(f.Host, f.Template, f.MatchedAt)] = true
+	}
+	logs := []string{}
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	workers := min(len(batches), min(scanConcurrency(c.Scan, 2), max(1, c.Scan.Rate)))
+	jobs := make(chan detectionBatch, len(batches))
+	results := make(chan detectionResult, max(workers, 1))
+	for _, batch := range batches {
+		jobs <- batch
+	}
+	close(jobs)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for batch := range jobs {
+				if workCtx.Err() != nil {
+					return
+				}
+				batchDir, e := os.MkdirTemp(dir, "detection-")
+				if e != nil {
+					results <- detectionResult{batch: batch, err: e}
+					continue
+				}
+				input, e := writeList(batchDir, "urls.txt", batch.urls)
+				if e != nil {
+					os.RemoveAll(batchDir)
+					results <- detectionResult{batch: batch, err: e}
+					continue
+				}
+				batchCtx, stop := context.WithTimeout(workCtx, detectionBatchBudget(len(batch.urls), len(batch.ids), max(1, c.Scan.Rate/workers)))
+				output, logText, e := w.runScanner(batchCtx, "nuclei", []string{"-l", input, "-t", batch.templates, "-jsonl", "-silent", "-duc", "-disable-unsigned-templates", "-etags", "dos,intrusive,fuzz,bruteforce", "-no-interactsh", "-proxy", proxy, "-H", "X-Scanner: Surfacer/" + c.Scan.ID, "-H", "User-Agent: " + scannerAgent(c.Scan.ID, "detection"), "-rl", strconv.Itoa(max(1, c.Scan.Rate/workers)), "-c", "1", "-pc", "1", "-bs", strconv.Itoa(max(1, scanConcurrency(c.Scan, 10)/workers)), "-timeout", "10", "-retries", "1", "-response-size-read", "65536", "-include-rr", "-matcher-status"}, proxy, batchDir)
+				stop()
+				os.RemoveAll(batchDir)
+				results <- detectionResult{batch, output, logText, e}
+			}
+		}()
+	}
+	go func() { wg.Wait(); close(results) }()
+	var stageErr, commitErr error
+	for result := range results {
+		logs = append(logs, result.logs)
+		parseErr := jsonLines(completeScannerRecords(result.output, result.err), func(b []byte) error {
 			var r struct {
 				Template      string `json:"template-id"`
 				Host          string `json:"host"`
@@ -931,11 +1079,10 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 				}
 			}
 			u, err := url.Parse(value)
-			if err != nil || !inScope(u.Hostname(), c.Target.Domain) {
+			if err != nil || !inScope(u.Hostname(), c.Target.Domain) || !contains(result.batch.ids, r.Template) || !contains(result.batch.origins, serviceOrigin(value)) {
 				return nil
 			}
 			if r.Error != "" || r.Response == "" || strings.Contains(r.Response, " 429 ") || strings.Contains(r.Response, " 503 ") {
-				cp.Blocked = append(cp.Blocked, u.Hostname())
 				return nil
 			}
 			cp.ServiceCoverage[serviceOrigin(value)] = append(cp.ServiceCoverage[serviceOrigin(value)], r.Template)
@@ -953,45 +1100,48 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 				}
 			}
 			finding := Finding{Template: r.Template, Host: u.Hostname(), MatchedAt: r.Matched, Title: capString(r.Info.Name, 300), Severity: r.Info.Severity, Description: capString(r.Info.Description, 2000), Remediation: capString(r.Info.Remediation, 2000), Evidence: evidence}
+			key := fingerprint(finding.Host, finding.Template, finding.MatchedAt)
+			if findingKeys[key] {
+				return nil
+			}
+			findingKeys[key] = true
 			cp.Findings = append(cp.Findings, finding)
-			findingLog := fmt.Sprintf("[Finding] %s (%s) on %s at %s", finding.Title, finding.Severity, finding.Host, finding.MatchedAt)
-			logs = append(logs, findingLog)
 			Log(ctx).Info("finding_discovered", "stage", "Detection", "host", finding.Host, "severity", finding.Severity, "template", finding.Template, "title", finding.Title, "matched_at", finding.MatchedAt)
 			return nil
 		})
-		if e != nil {
-			if errors.Is(e, context.Canceled) {
-				return cp, strings.Join(logs, "\n"), e
-			}
-			issue := fmt.Sprintf("Nuclei batch detection error: %v", e)
-			cp.SourceIssues = append(cp.SourceIssues, issue)
-			logs = append(logs, issue)
+		if result.err != nil || parseErr != nil {
+			stageErr = errors.Join(stageErr, fmt.Errorf("Nuclei batch %d incomplete: %w", result.batch.index, errors.Join(result.err, parseErr)))
 		}
-		if parseErr != nil {
-			return cp, strings.Join(logs, "\n"), parseErr
-		}
-		for _, value := range urls {
-			u, _ := url.Parse(value)
-			complete := true
-			for _, template := range paths[templates] {
-				if !contains(cp.ServiceCoverage[serviceOrigin(value)], template) {
-					complete = false
-				}
-			}
-			if complete {
-				cp.Covered = append(cp.Covered, u.Hostname())
-			} else {
-				cp.Blocked = append(cp.Blocked, u.Hostname())
+		if commitErr == nil {
+			commitErr = w.checkpoint(ctx, c, "Detection", cp, "Nuclei batch observations checkpointed; coverage tracked per service and template.")
+			if commitErr != nil {
+				cancel()
 			}
 		}
 	}
+	missing := 0
+	for templates, urls := range groups {
+		for _, raw := range dedupeStrings(urls) {
+			u, _ := url.Parse(raw)
+			if serviceTemplatesCovered(cp, serviceOrigin(raw), paths[templates]) {
+				cp.Covered = append(cp.Covered, u.Hostname())
+			} else {
+				missing++
+			}
+		}
+	}
+	cp.Covered = dedupeStrings(cp.Covered)
+	if missing > 0 {
+		stageErr = errors.Join(stageErr, fmt.Errorf("Detection coverage incomplete for %d services", missing))
+	}
+	stageErr = errors.Join(stageErr, commitErr, ctx.Err())
 	detectedCount := 0
 	for _, f := range cp.Findings {
 		if !strings.HasPrefix(f.Template, "tls-") && !strings.HasPrefix(f.Template, "gitleaks:") {
 			detectedCount++
 		}
 	}
-	return cp, fmt.Sprintf("%d signed curated HTTP templates evaluated; %d findings detected in this stage (%d total scan findings); %d hosts covered. %s", len(manifest.Templates), detectedCount, len(cp.Findings), len(cp.Covered), strings.Join(logs, "\n")), nil
+	return cp, fmt.Sprintf("%d signed curated HTTP templates evaluated; %d findings detected in this stage (%d total scan findings); %d hosts covered. %s", len(manifest.Templates), detectedCount, len(cp.Findings), len(cp.Covered), strings.Join(logs, "\n")), stageErr
 }
 
 // Scanner DNS is pinned to public resolution. Resolve the trusted Docker proxy
