@@ -122,6 +122,61 @@ export type Settings = {
   retention: number;
   paused: boolean;
 };
+export type MXRecord = {
+  host: string;
+  pref: number;
+  ips?: string[];
+};
+export type DomainDNSPosture = {
+  id: string;
+  scanId: string;
+  domain: string;
+  spfRecord: string;
+  spfStatus: "secure" | "softfail" | "permissive" | "missing";
+  dmarcRecord: string;
+  dmarcPolicy: "reject" | "quarantine" | "none" | "missing";
+  dkimDetected: boolean;
+  mxRecords: MXRecord[];
+  createdAt: string;
+};
+export type SubdomainTakeover = {
+  id: string;
+  scanId: string;
+  subdomain: string;
+  cname: string;
+  serviceProvider: string;
+  status: "open" | "resolved" | "suppressed";
+  firstSeen: string;
+  lastSeen: string;
+  reopenCount: number;
+  missingScans?: number;
+};
+export type EndpointHazard = {
+  id: string;
+  scanId: string;
+  url: string;
+  parameter: string;
+  hazardClass:
+    | "ssrf_candidate"
+    | "redirect_candidate"
+    | "lfi_candidate"
+    | "sqli_candidate"
+    | "debug_flag"
+    | "sensitive_file";
+  severity: "critical" | "high" | "medium" | "low";
+  createdAt: string;
+};
+export type NotificationWebhook = {
+  id: string;
+  url: string;
+  webhookType: "slack" | "discord" | "generic";
+  enabled: boolean;
+  notifyOnNewAssets: boolean;
+  notifyOnNewPorts: boolean;
+  notifyOnHighFindings: boolean;
+  notifyOnTakeovers: boolean;
+  createdAt: string;
+};
 export type State = {
   history?: Endpoint[];
   me?: { id: string; name: string; role: string };
@@ -140,6 +195,10 @@ export type State = {
   events: Event[];
   audit: Event[];
   settings: Settings;
+  dnsPosture?: DomainDNSPosture[];
+  takeovers?: SubdomainTakeover[];
+  hazards?: EndpointHazard[];
+  webhooks?: NotificationWebhook[];
   runtime?: {
     liveScanning: boolean;
     workers: number;

@@ -1026,6 +1026,7 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 				s.state.Takeovers[i].LastSeen = stamp
 				s.state.Takeovers[i].ScanID = sc.ID
 				s.state.Takeovers[i].CNAME = to.CNAME
+				s.state.Takeovers[i].MissingScans = 0
 				if old.Status == "resolved" {
 					s.state.Takeovers[i].Status = "open"
 					s.state.Takeovers[i].ReopenCount++
@@ -1039,6 +1040,7 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 			to.FirstSeen = stamp
 			to.LastSeen = stamp
 			to.Status = "open"
+			to.MissingScans = 0
 			s.state.Takeovers = append(s.state.Takeovers, to)
 			s.emit("takeover", "Subdomain takeover candidate detected", to.Subdomain+" · "+to.ServiceProvider, stamp)
 		}
@@ -1051,8 +1053,13 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 			}
 			toKey := old.Subdomain + "|" + old.ServiceProvider
 			if !observedTakeovers[toKey] {
-				old.Status = "resolved"
-				s.emit("resolved", "Subdomain takeover resolved", old.Subdomain+" · "+old.ServiceProvider, stamp)
+				old.MissingScans++
+				if old.MissingScans >= 2 {
+					old.Status = "resolved"
+					s.emit("resolved", "Subdomain takeover resolved", old.Subdomain+" · "+old.ServiceProvider, stamp)
+				}
+			} else {
+				old.MissingScans = 0
 			}
 		}
 	}
