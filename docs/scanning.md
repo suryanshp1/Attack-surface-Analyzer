@@ -32,7 +32,7 @@ Katana runs separately for each deduplicated service origin with a 110-second pr
 
 Use **Scan activity → Resume scan** or `POST /api/scans/{id}/retry` to create a new run from saved stages. The original run remains in history. Completed port batches, crawl seeds and confirmed detection services are reused; unfinished work is retried. Stage execution can finish with incomplete coverage: explicit stage issues force a partial scan, and resume starts at the earliest affected stage. Retrying discovery or DNS invalidates stale downstream network checkpoints. Worker shutdown or execution-window expiration checkpoints the current stage before releasing the lease; three interrupted worker attempts terminate as partial. Concurrent target runs, revoked access, paused scanning, and missing ownership proof in required-verification mode prevent retry.
 
-DNS takeover checks use a bounded pool of at most ten tasks, honor the configured concurrency, share gateway DNS pacing and have eight-second task guards plus an allowance for pacing wait. Transient DNS errors remain incomplete checks rather than negative results.
+DNS takeover checks use a bounded pool of at most ten tasks, honor the configured concurrency, share gateway DNS pacing and have eight-second task guards plus an allowance for pacing wait. Transient DNS errors remain incomplete checks rather than negative results. Takeover candidates resolve only after two consecutive completed successful scans without a matching observation, and reopen immediately with reset missing scan counts if rediscovered.
 
 Nuclei groups curated templates by matching technology (with generic templates evaluated across all services). URLs are batched in groups of up to 50, with up to three parallel worker processes. Rate, template concurrency, and host concurrency are scaled across subprocesses to stay within the scan settings (`-mhe 5` skips unresponsive hosts before they exhaust stage budgets). Scanner output is streamed line by line to eliminate buffer overflow risks. Observed records and findings are merged in memory and checkpointed to the API periodically (or whenever new findings are discovered). A resumed detection pass skips services whose required templates already have coverage and preserves observed findings.
 
@@ -53,6 +53,7 @@ Stage progress is not asset coverage. A finished bounded crawl is not proof of e
 | Finding | After two successful scans with explicit coverage of its host and template |
 | Asset | After two successful scans with confirmed DNS absence |
 | Endpoint | After two clean completed crawls establishing absence |
+| Subdomain takeover | After two successful scans confirming absence of the dangling CNAME |
 
 Partial scans, blocked hosts, missing responses, resolver failures, and checks that did not run preserve unchecked history. Accepted-risk and false-positive decisions remain suppressed; resolved issues reopen when rediscovered. First-seen timestamps and triage notes are retained through normalization.
 
