@@ -38,6 +38,10 @@ func TestStorageIntegration(t *testing.T) {
 	}()
 	s.state.Targets = []Target{{ID: "storage-target", Domain: "storage-fixture.example", Status: "verified"}}
 	sc := Scan{ID: "storage-scan", TargetID: "storage-target", Domain: "storage-fixture.example", Status: "completed", Checkpoint: Checkpoint{Assets: []Asset{{Host: "storage-fixture.example", Type: "Web service", Technologies: []string{}, Ports: []int{443}, Endpoints: []Endpoint{{ID: "fixture-endpoint", URL: "https://storage-fixture.example/api", Method: "GET", Kind: "API endpoint", Parameters: []string{}}}}}, Findings: []Finding{{Host: "storage-fixture.example", Template: "git-config", MatchedAt: "https://storage-fixture.example/.git/config", Title: "Fixture finding", Severity: "medium", Evidence: "DATABASE_PASSWORD=fixture-storage-secret\n"}}}}
+	sc.ParentScanID = "prior-storage-attempt"
+	sc.Stages = []Stage{{Name: "HTTP probing", Status: "completed", StartedAt: now(), FinishedAt: now()}}
+	sc.Checkpoint.ProbeResults = map[string]string{"https://storage-fixture.example": "responded"}
+	sc.Checkpoint.DetectionRequired = map[string][]string{"https://storage-fixture.example": {"git-config"}}
 	sc.Checkpoint.History = []Endpoint{{ID: "historic-fixture", TargetID: "storage-target", URL: "https://storage-fixture.example/old", Method: "Historical", Historical: true}}
 	s.state.Members = []Member{{ID: "fixture-member", Name: "Integration viewer", Role: "viewer", Enabled: true}}
 	s.state.AccessKeys = []AccessKey{{ID: "fixture-key", UserID: "fixture-member", Name: "Integration", Hash: tokenDigest("fixture-only"), ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}}
@@ -75,6 +79,10 @@ func TestStorageIntegration(t *testing.T) {
 	}
 	if len(reloaded.state.History) != 1 || !reloaded.state.History[0].Historical || len(reloaded.state.Members) != 1 || len(reloaded.state.AccessKeys) != 1 || reloaded.state.AccessKeys[0].Hash != tokenDigest("fixture-only") || len(reloaded.state.Assets[0].Services) != 1 {
 		t.Fatal("history, services or hashed access did not persist")
+	}
+	storedScan := reloaded.state.Scans[0]
+	if storedScan.ParentScanID != sc.ParentScanID || storedScan.Stages[0].StartedAt == "" || storedScan.Checkpoint.ProbeResults["https://storage-fixture.example"] != "responded" || len(storedScan.Checkpoint.DetectionRequired["https://storage-fixture.example"]) != 1 {
+		t.Fatal("scan lineage, timings or service outcomes did not persist")
 	}
 	finding := reloaded.state.Findings[0]
 	if finding.EvidenceKey == "" {

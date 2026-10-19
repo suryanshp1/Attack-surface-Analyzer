@@ -28,28 +28,30 @@ type RuntimeInfo struct {
 	VerificationRequired bool `json:"verificationRequired"`
 }
 type Checkpoint struct {
-	IncompleteStages map[string]string   `json:"incompleteStages,omitempty"`
-	CrawlIncomplete  []string            `json:"crawlIncomplete,omitempty"`
-	CrawlResults     map[string]bool     `json:"crawlResults,omitempty"`
-	PortIncomplete   []string            `json:"portIncomplete,omitempty"`
-	PortResults      map[string][]int    `json:"portResults,omitempty"`
-	History          []Endpoint          `json:"history,omitempty"`
-	SourceIssues     []string            `json:"sourceIssues,omitempty"`
-	ServiceCoverage  map[string][]string `json:"serviceCoverage,omitempty"`
-	KnownSecrets     []Finding           `json:"knownSecrets,omitempty"`
-	SecretCoverage   map[string][]string `json:"secretCoverage,omitempty"`
-	Hosts            map[string][]string `json:"hosts,omitempty"`
-	DNS              map[string][]string `json:"dns,omitempty"`
-	Assets           []Asset             `json:"assets,omitempty"`
-	Findings         []Finding           `json:"findings,omitempty"`
-	Covered          []string            `json:"covered,omitempty"`
-	Coverage         map[string][]string `json:"coverage,omitempty"`
-	Templates        []string            `json:"templates,omitempty"`
-	Blocked          []string            `json:"blocked,omitempty"`
-	Known            []string            `json:"known,omitempty"`
-	DNSPosture       *DomainDNSPosture   `json:"dnsPosture,omitempty"`
-	Takeovers        []SubdomainTakeover `json:"takeovers,omitempty"`
-	Hazards          []EndpointHazard    `json:"hazards,omitempty"`
+	ProbeResults      map[string]string   `json:"probeResults,omitempty"`
+	DetectionRequired map[string][]string `json:"detectionRequired,omitempty"`
+	IncompleteStages  map[string]string   `json:"incompleteStages,omitempty"`
+	CrawlIncomplete   []string            `json:"crawlIncomplete,omitempty"`
+	CrawlResults      map[string]bool     `json:"crawlResults,omitempty"`
+	PortIncomplete    []string            `json:"portIncomplete,omitempty"`
+	PortResults       map[string][]int    `json:"portResults,omitempty"`
+	History           []Endpoint          `json:"history,omitempty"`
+	SourceIssues      []string            `json:"sourceIssues,omitempty"`
+	ServiceCoverage   map[string][]string `json:"serviceCoverage,omitempty"`
+	KnownSecrets      []Finding           `json:"knownSecrets,omitempty"`
+	SecretCoverage    map[string][]string `json:"secretCoverage,omitempty"`
+	Hosts             map[string][]string `json:"hosts,omitempty"`
+	DNS               map[string][]string `json:"dns,omitempty"`
+	Assets            []Asset             `json:"assets,omitempty"`
+	Findings          []Finding           `json:"findings,omitempty"`
+	Covered           []string            `json:"covered,omitempty"`
+	Coverage          map[string][]string `json:"coverage,omitempty"`
+	Templates         []string            `json:"templates,omitempty"`
+	Blocked           []string            `json:"blocked,omitempty"`
+	Known             []string            `json:"known,omitempty"`
+	DNSPosture        *DomainDNSPosture   `json:"dnsPosture,omitempty"`
+	Takeovers         []SubdomainTakeover `json:"takeovers,omitempty"`
+	Hazards           []EndpointHazard    `json:"hazards,omitempty"`
 }
 type WorkerInfo struct {
 	ID       string            `json:"id"`
@@ -195,7 +197,7 @@ func publicScan(scan Scan) Scan {
 	sc := &scan
 	sc.Stages = append([]Stage{}, sc.Stages...)
 	reconcileTerminalStages(sc)
-	sc.Coverage = ScanCoverage{len(sc.Checkpoint.CrawlResults), len(sc.Checkpoint.CrawlIncomplete), len(sc.Checkpoint.PortResults), len(sc.Checkpoint.PortIncomplete)}
+	projectScanCoverage(sc)
 	scan.ExcludedHosts = excludedHosts(scan.Checkpoint)
 	if scan.Status == "partial" && strings.Contains(scan.Error, "Some hosts were blocked") {
 		scan.Error = coverageSummary(scan.Checkpoint)
@@ -658,6 +660,12 @@ func (s *Server) workerAPI(w http.ResponseWriter, r *http.Request) {
 			sc.Checkpoint = p.Checkpoint
 		} else {
 			sc.Stages[p.Stage].Status = p.Status
+			if p.Status == "running" {
+				sc.Stages[p.Stage].StartedAt = now()
+				sc.Stages[p.Stage].FinishedAt = ""
+			} else {
+				sc.Stages[p.Stage].FinishedAt = now()
+			}
 		}
 		sc.Stages[p.Stage].Log = redact(capString(p.Log, 4000))
 		if p.Status == "completed" {
@@ -737,6 +745,9 @@ func capString(s string, n int) string {
 	return s
 }
 func validateCheckpoint(cp Checkpoint, root string) error {
+	if err := validateServiceOutcomes(cp, root); err != nil {
+		return err
+	}
 	if len(cp.IncompleteStages) > 20 {
 		return errors.New("Too many incomplete stages")
 	}

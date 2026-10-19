@@ -2,7 +2,9 @@
 
 [Back to README](../README.md)
 
-Review date: 19 October 2026. This is an assessment and proposed backlog, not an implementation claim.
+Review date: 19 October 2026. This is the original assessment and proposed backlog. See [implementation plan](pipeline-ux-plan.md) for the implemented scope and validation.
+
+Correction from implementation tracing: `Checkpoint.Blocked` and `Asset.Blocked` are distinct. Detection already filters failing services individually; the original host-wide suppression claim below was incorrect. The confirmed gap was missing per-origin failure accounting, especially failed or silent siblings of healthy services.
 
 ## Scope and validation
 

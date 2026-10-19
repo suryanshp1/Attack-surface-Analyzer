@@ -145,7 +145,7 @@ func TestHTTPDeadlineRetainsRealServiceResponses(t *testing.T) {
 		return []byte("{\"url\":\"https://good.owned.example:443\",\"status_code\":200}\n"), "", context.DeadlineExceeded
 	}}
 	result, log, err := worker.probe(context.Background(), Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Rate: 5, Concurrency: 2}}, cp, "http://127.0.0.1:3128", t.TempDir())
-	if err != nil || result.Assets[0].URL == "" || len(result.Assets[0].Services) != 1 || !contains(result.Blocked, "unfinished.owned.example") || !strings.Contains(log, "retained 1 completed probe records") {
+	if !errors.Is(err, context.DeadlineExceeded) || result.Assets[0].URL == "" || len(result.Assets[0].Services) != 1 || !contains(result.Blocked, "unfinished.owned.example") || !strings.Contains(log, "retained 1 completed probe records") {
 		t.Fatalf("HTTP deadline lost results or claimed clean coverage: %s %v", log, err)
 	}
 }

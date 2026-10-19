@@ -98,20 +98,44 @@ type Note struct {
 	Actor string `json:"actor"`
 }
 type Stage struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Tool     string `json:"tool"`
-	Log      string `json:"log"`
-	Attempts int    `json:"attempts"`
+	CoverageStatus string `json:"coverageStatus,omitempty"`
+	Issue          string `json:"issue,omitempty"`
+	StartedAt      string `json:"startedAt,omitempty"`
+	FinishedAt     string `json:"finishedAt,omitempty"`
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	Tool           string `json:"tool"`
+	Log            string `json:"log"`
+	Attempts       int    `json:"attempts"`
+}
+type CheckCoverage struct {
+	Finished  int `json:"finished"`
+	Remaining int `json:"remaining"`
+}
+type ServiceIssue struct {
+	Origin string `json:"origin"`
+	Reason string `json:"reason"`
+}
+type ResumePlan struct {
+	FromStage        string `json:"fromStage"`
+	RetainedStages   int    `json:"retainedStages"`
+	RepeatedStages   int    `json:"repeatedStages"`
+	CheckpointPolicy string `json:"checkpointPolicy"`
 }
 type ScanCoverage struct {
-	CrawlFinished  int `json:"crawlFinished"`
-	CrawlRemaining int `json:"crawlRemaining"`
-	PortFinished   int `json:"portFinished"`
-	PortRemaining  int `json:"portRemaining"`
+	HTTP              *CheckCoverage `json:"http,omitempty"`
+	Detection         *CheckCoverage `json:"detection,omitempty"`
+	ServiceIssues     []ServiceIssue `json:"serviceIssues,omitempty"`
+	ServiceIssueCount int            `json:"serviceIssueCount"`
+	CrawlFinished     int            `json:"crawlFinished"`
+	CrawlRemaining    int            `json:"crawlRemaining"`
+	PortFinished      int            `json:"portFinished"`
+	PortRemaining     int            `json:"portRemaining"`
 }
 type Scan struct {
-	Coverage ScanCoverage `json:"coverage"`
+	ParentScanID string       `json:"parentScanId,omitempty"`
+	Resume       *ResumePlan  `json:"resume,omitempty"`
+	Coverage     ScanCoverage `json:"coverage"`
 
 	ExcludedHosts []string          `json:"excludedHosts,omitempty"`
 	ID            string            `json:"id"`
@@ -699,27 +723,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		retry.Worker = ""
 		retry.Attempts = 0
 		retry.RetryAt = ""
-		firstPending := len(retry.Stages)
-		for i, stage := range retry.Stages {
-			if (stage.Status != "completed" || retry.Checkpoint.IncompleteStages[stage.Name] != "") && i < firstPending {
-				firstPending = i
-			}
-			if stage.Name == "Endpoint crawling" && len(retry.Checkpoint.CrawlIncomplete) > 0 && i < firstPending {
-				firstPending = i
-			}
-			if stage.Name == "Port discovery" && len(retry.Checkpoint.PortIncomplete) > 0 && i < firstPending {
-				firstPending = i
-			}
-		}
-		if firstPending == len(retry.Stages) {
-			// A partial run can have all stages finished but blocked coverage.
-			for i, stage := range retry.Stages {
-				if stage.Name == "HTTP probing" {
-					firstPending = i
-					break
-				}
-			}
-		}
+		firstPending := resumeStage(retry)
+		retry.Progress = firstPending * 100 / max(1, len(retry.Stages))
+		retry.ParentScanID = previousID
+		retry.Resume = nil
 		for i := firstPending; i < len(retry.Stages); i++ {
 			retry.Stages[i].Status = "pending"
 		}
@@ -734,6 +741,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				retry.Stages[i].Status = "pending"
 				retry.Stages[i].Attempts = 0
 				retry.Stages[i].Log = ""
+				retry.Stages[i].StartedAt = ""
+				retry.Stages[i].FinishedAt = ""
+				retry.Stages[i].CoverageStatus = ""
+				retry.Stages[i].Issue = ""
 			}
 		}
 		s.state.Scans = append([]Scan{retry}, s.state.Scans...)

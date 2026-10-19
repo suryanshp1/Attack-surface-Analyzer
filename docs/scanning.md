@@ -74,3 +74,13 @@ Finding evidence is redacted, capped at 16 KiB, and rendered as inert text. Sens
 ## Pipeline measurements
 
 The owner metrics endpoint includes stage duration summaries, `surfacer_scan_stage_timeouts_total`, `surfacer_checkpoint_writes_total`, `surfacer_checkpoint_failures_total` and a `surfacer_checkpoint_duration_seconds` summary. Checkpoint metrics measure port/crawl/detection progress commits and interrupted-stage commits, including bounded retry time. Counters reset with the process. Compare completed service/template coverage and partial-run frequency alongside runtime; a shorter scan with more unchecked work is not a throughput improvement.
+
+## Understanding scan outcomes in the workspace
+
+Scan detail distinguishes a finished execution pass from a pass with coverage gaps. HTTP outcomes are recorded per service origin; a failed or silent sibling service cannot disappear behind a successful response on the same host. HTTP subprocess errors preserve observations and force an incomplete stage. A healthy sibling stays eligible for detection, subject to the same shared gateway cooldowns and pacing.
+
+HTTP coverage counts origins that responded without blocking/server errors versus origins still unchecked. Detection coverage counts completed and unfinished required service/template pairs for eligible services; services with unsuccessful HTTP checks are listed separately. These are bounded-profile counts, not exhaustive site or vulnerability coverage. Older snapshots without the new counters display unavailable counts rather than zero completed checks. Public service issue lists are capped at 50 entries and include the total affected count.
+
+Before continuing a partial or failed attempt, scan detail shows the restart stage, earlier stage passes retained, downstream passes rerun, and checkpoint reuse policy. The preview and retry use the same server restart-stage logic. A continued attempt creates a new run with a link to its parent; original observations, timestamps and triage history remain. Stage timings are recorded for new execution passes. Existing JSON and PostgreSQL JSONB records load without a schema reset or migration.
+
+Scan history is paginated with URL-backed filters. Live updates reconnect with bounded backoff and use periodic snapshot refresh only while disconnected; hidden tabs suspend stream/poll activity. The workspace shows connection state and the time the last snapshot was received, independently of observation age.

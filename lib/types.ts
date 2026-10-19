@@ -75,7 +75,14 @@ export type Finding = {
   remediation: string;
   evidence: string;
   notes: { text: string; at: string; actor: string }[];
-  category?: "vulnerability" | "port" | "endpoint" | "hazard" | "secret" | "host" | string;
+  category?:
+    | "vulnerability"
+    | "port"
+    | "endpoint"
+    | "hazard"
+    | "secret"
+    | "host"
+    | string;
   port?: number;
   protocol?: string;
   method?: string;
@@ -89,7 +96,19 @@ export type Finding = {
   stepSuccess?: boolean;
 };
 export type Scan = {
+  parentScanId?: string;
+  resume?: {
+    fromStage: string;
+    retainedStages: number;
+    repeatedStages: number;
+    checkpointPolicy: string;
+  };
+  concurrency?: number;
   coverage?: {
+    http?: { finished: number; remaining: number };
+    detection?: { finished: number; remaining: number };
+    serviceIssues?: { origin: string; reason: string }[];
+    serviceIssueCount?: number;
     crawlFinished: number;
     crawlRemaining: number;
     portFinished: number;
@@ -105,6 +124,10 @@ export type Scan = {
   finishedAt: string;
   progress: number;
   stages: {
+    coverageStatus?: "finished" | "incomplete" | "unknown";
+    issue?: string;
+    startedAt?: string;
+    finishedAt?: string;
     name: string;
     status: string;
     tool: string;

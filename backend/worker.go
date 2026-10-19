@@ -768,6 +768,14 @@ func (w *Worker) probe(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 			output = output[:last+1]
 		}
 	}
+	probeErr := err
+	cp.ProbeResults = map[string]string{}
+	for _, raw := range hosts {
+		if !strings.Contains(raw, "://") {
+			raw = "https://" + raw
+		}
+		cp.ProbeResults[serviceOrigin(raw)] = "unfinished"
+	}
 	responses := map[string]bool{}
 	failedHosts := map[string][]string{}
 	err = jsonLines(output, func(b []byte) error {
@@ -790,8 +798,11 @@ func (w *Worker) probe(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 		if e != nil || !inScope(u.Hostname(), c.Target.Domain) {
 			return nil
 		}
-		responses[serviceOrigin(result.URL)] = true
+		origin := serviceOrigin(result.URL)
+		responses[origin] = true
+		cp.ProbeResults[origin] = "responded"
 		if result.Failed || result.Status < 100 || result.Status > 599 {
+			cp.ProbeResults[origin] = "failed"
 			failedHosts[u.Hostname()] = append(failedHosts[u.Hostname()], capString(redact(result.Error), 300))
 			return nil
 		}
@@ -829,6 +840,13 @@ func (w *Worker) probe(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 				a.TLS = result.TLS.NotAfter
 			}
 			if result.Status >= 500 || result.Status == 429 || result.Status == 403 {
+				cp.ProbeResults[origin] = "server_error"
+				if result.Status == 403 {
+					cp.ProbeResults[origin] = "forbidden"
+				}
+				if result.Status == 429 {
+					cp.ProbeResults[origin] = "rate_limited"
+				}
 				cp.Blocked = append(cp.Blocked, a.Host)
 				if result.Status == 403 || result.Status == 429 || result.Status == 503 {
 					reportCooldown(ctx, proxy, a.Host, result.Status, "")
@@ -880,7 +898,19 @@ func (w *Worker) probe(ctx context.Context, c Claim, cp Checkpoint, proxy, dir s
 	if failed > 0 {
 		logs += fmt.Sprintf("\n%d hosts had no successful HTTP probe. %s", failed, strings.Join(examples, "; "))
 	}
-	return cp, fmt.Sprintf("%d live web hosts identified. %s", live, logs), err
+	unchecked := 0
+	for origin, outcome := range cp.ProbeResults {
+		if outcome != "responded" {
+			unchecked++
+			if u, e := url.Parse(origin); e == nil {
+				cp.Blocked = append(cp.Blocked, u.Hostname())
+			}
+		}
+	}
+	if unchecked > 0 {
+		err = errors.Join(err, fmt.Errorf("HTTP checks incomplete for %d service origins", unchecked))
+	}
+	return cp, fmt.Sprintf("%d live web hosts identified. %s", live, logs), errors.Join(probeErr, err)
 }
 func (w *Worker) inspectCertificates(ctx context.Context, cp Checkpoint, proxy, scanID string, rate int, concurrency ...int) (Checkpoint, string, error) {
 	p, err := url.Parse(proxy)
@@ -1096,6 +1126,7 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 	for origin := range required {
 		required[origin] = dedupeStrings(required[origin])
 	}
+	cp.DetectionRequired = required
 
 	cp.Templates = []string{}
 	for tech := range groups {

@@ -27,7 +27,7 @@
     "/state": {
       "get": {
         "summary": "Workspace snapshot",
-        "description": "Minimum role: viewer. This deployment contains one workspace.",
+        "description": "Minimum role: viewer. This deployment contains one workspace. Scan snapshots include additive stage coverageStatus (finished, incomplete, unknown), issue and optional startedAt/finishedAt fields. coverage.http and coverage.detection contain finished/remaining counts when recorded; absent fields mean unknown for legacy runs. HTTP counts measure service origins; detection counts measure required service/template pairs for eligible services, not exhaustive asset coverage. coverage.serviceIssues contains up to 50 origin/reason records with serviceIssueCount for the total. Partial/failed scans include resume.fromStage, retainedStages, repeatedStages and checkpointPolicy. parentScanId links continued attempts. Existing execution status and progress semantics are unchanged.",
         "responses": {
           "200": {
             "description": "Success (creation endpoints return 201)"
@@ -449,7 +449,7 @@
     "/scans/{id}/retry": {
       "post": {
         "summary": "Resume partial or failed scan from saved checkpoints",
-        "description": "Minimum role: analyst. Creates a new queued run from the earliest incomplete stage; completed port batches, crawl seeds and confirmed detection services are retained when their upstream inputs remain valid. Rejects concurrent target scans.",
+        "description": "Minimum role: analyst. Creates a new queued run from the earliest incomplete stage; completed port batches, crawl seeds and confirmed detection services are retained when their upstream inputs remain valid. Rejects concurrent target scans. The restart stage uses the same server helper as the snapshot resume preview. The new run stores parentScanId and clears timestamps only for stages rerun. Authorization and availability are rechecked at execution time; the preview does not grant permission.",
         "parameters": [
           {
             "name": "id",

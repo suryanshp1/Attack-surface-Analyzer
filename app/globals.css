@@ -4395,3 +4395,58 @@ textarea::placeholder {
 .settings-section .appearance-control {
   font-size: 14px;
 }
+
+/* Assessment outcomes use the shared appearance tokens in both palettes. */
+.connection-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 14px 0 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.connection-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
+.connection-live .connection-dot { background: var(--success); }
+.connection-offline .connection-dot { background: var(--critical); }
+.scan-history .scan-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.3fr) auto auto;
+  gap: 24px;
+  align-items: center;
+  padding: 24px;
+  border-radius: 16px;
+}
+.scan-history-identity, .scan-history-outcome { min-width: 0; }
+.scan-history-identity p, .scan-history-outcome > span:last-child, .scan-history-counts { font-size: 12px; color: var(--muted); }
+.scan-history-identity p { margin-top: 6px; }
+.scan-history-outcome { display: grid; justify-items: start; gap: 8px; }
+.scan-history-counts { display: grid; gap: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scan-history .scan-domain { overflow-wrap: anywhere; white-space: normal; }
+.resume-preview, .service-issues, .scan-preflight {
+  margin: 16px 0;
+  padding: 18px;
+  background: var(--soft);
+  border-radius: 12px;
+  font-size: 13px;
+}
+.resume-preview h3, .service-issues h3, .scan-preflight h3 { font-size: 14px; margin-bottom: 8px; }
+.resume-preview p + p, .scan-preflight p + p { margin-top: 8px; }
+.service-issues ul { list-style: none; padding: 0; margin: 0; }
+.service-issues li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.service-issues code { overflow-wrap: anywhere; min-width: 0; }
+.service-issues li span, .stage-issue { color: var(--warning); }
+.stage-issue { margin-top: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.stage-incomplete > span { color: var(--warning); background: var(--warning-surface); }
+.findings-context { margin-bottom: 20px; color: var(--muted); font-size: 13px; max-width: 75ch; }
+@media (max-width: 1100px) {
+  .scan-history .scan-history-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+  .scan-history-row > .button { justify-self: end; }
+}
+@media (max-width: 760px) {
+  .scan-history .scan-history-row { grid-template-columns: minmax(0, 1fr); padding: 18px; gap: 14px; }
+  .scan-history-row > .button { justify-self: stretch; min-height: 44px; }
+  .scan-history-counts { display: flex; gap: 18px; }
+  .stage-detail > .badge { max-width: none; white-space: normal; }
+  .service-issues li { flex-direction: column; }
+}
