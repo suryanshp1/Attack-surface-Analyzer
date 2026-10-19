@@ -64,6 +64,7 @@ type Asset struct {
 }
 type Finding struct {
 	ID           string   `json:"id"`
+	DeletedAt    string   `json:"deletedAt,omitempty"`
 	Title        string   `json:"title"`
 	Severity     string   `json:"severity"`
 	Host         string   `json:"host"`
@@ -227,23 +228,24 @@ type NotificationWebhook struct {
 	CreatedAt            string `json:"createdAt"`
 }
 type State struct {
-	Members    []Member              `json:"members"`
-	AccessKeys []AccessKey           `json:"accessKeys"`
-	Me         Actor                 `json:"me"`
-	History    []Endpoint            `json:"history"`
-	Targets    []Target              `json:"targets"`
-	Assets     []Asset               `json:"assets"`
-	Findings   []Finding             `json:"findings"`
-	Scans      []Scan                `json:"scans"`
-	Events     []Event               `json:"events"`
-	Audit      []Event               `json:"audit"`
-	Settings   Settings              `json:"settings"`
-	Demo       bool                  `json:"demo,omitempty"`
-	Runtime    RuntimeInfo           `json:"runtime"`
-	DNSPosture []DomainDNSPosture    `json:"dnsPosture,omitempty"`
-	Takeovers  []SubdomainTakeover   `json:"takeovers,omitempty"`
-	Hazards    []EndpointHazard      `json:"hazards,omitempty"`
-	Webhooks   []NotificationWebhook `json:"webhooks,omitempty"`
+	RecordDeletions map[string]string     `json:"recordDeletions,omitempty"`
+	Members         []Member              `json:"members"`
+	AccessKeys      []AccessKey           `json:"accessKeys"`
+	Me              Actor                 `json:"me"`
+	History         []Endpoint            `json:"history"`
+	Targets         []Target              `json:"targets"`
+	Assets          []Asset               `json:"assets"`
+	Findings        []Finding             `json:"findings"`
+	Scans           []Scan                `json:"scans"`
+	Events          []Event               `json:"events"`
+	Audit           []Event               `json:"audit"`
+	Settings        Settings              `json:"settings"`
+	Demo            bool                  `json:"demo,omitempty"`
+	Runtime         RuntimeInfo           `json:"runtime"`
+	DNSPosture      []DomainDNSPosture    `json:"dnsPosture,omitempty"`
+	Takeovers       []SubdomainTakeover   `json:"takeovers,omitempty"`
+	Hazards         []EndpointHazard      `json:"hazards,omitempty"`
+	Webhooks        []NotificationWebhook `json:"webhooks,omitempty"`
 }
 type Server struct {
 	mu              sync.Mutex
@@ -674,7 +676,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		var previous *Scan
 		for i := range s.state.Scans {
-			if s.state.Scans[i].ID == parts[1] {
+			if s.state.Scans[i].ID == parts[1] && !s.recordDeleted("scans", parts[1]) {
 				previous = &s.state.Scans[i]
 				break
 			}
@@ -776,6 +778,30 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		mutated = true
+	case (len(parts) == 1 || len(parts) == 2) && deletableResource(parts[0]) && r.Method == "DELETE":
+		if actor.Role != "owner" {
+			fail(w, 403, "Only workspace owners can delete records")
+			return
+		}
+		var p struct {
+			IDs []string `json:"ids"`
+		}
+		if len(parts) == 2 {
+			p.IDs = []string{parts[1]}
+		} else if !decode(w, r, &p) {
+			return
+		}
+		deleted, err := s.deleteRecords(parts[0], p.IDs)
+		if err != nil {
+			code := 400
+			if errors.Is(err, errActiveScanDeletion) {
+				code = 409
+			}
+			fail(w, code, err.Error())
+			return
+		}
+		result = map[string]any{"deleted": deleted}
+		mutated = deleted > 0
 	case len(parts) == 2 && parts[0] == "findings" && r.Method == "PATCH":
 		var p struct {
 			Status string `json:"status"`
@@ -794,7 +820,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		found := false
 		for i, f := range s.state.Findings {
-			if f.ID == parts[1] {
+			if f.ID == parts[1] && f.DeletedAt == "" {
 				s.state.Findings[i].Status = p.Status
 				s.state.Findings[i].Notes = append(s.state.Findings[i].Notes, Note{p.Note, now(), actor.Name})
 				s.audit("Finding triaged", f.Title+": "+p.Status)
@@ -972,7 +998,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		found := false
 		for i, to := range s.state.Takeovers {
-			if to.ID == parts[1] {
+			if to.ID == parts[1] && !s.recordDeleted("takeovers", to.ID) {
 				s.state.Takeovers[i].Status = p.Status
 				s.audit("Subdomain takeover status updated", to.Subdomain+": "+p.Status)
 				result = s.state.Takeovers[i]
@@ -991,7 +1017,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if mutated {
 		if err := s.save(); err != nil {
-			_ = json.Unmarshal(before, &s.state)
+			var restored State
+			if json.Unmarshal(before, &restored) == nil {
+				s.state = restored
+			}
 			log.Printf("persist: %v", err)
 			fail(w, 500, "Could not save changes. Please retry.")
 			return

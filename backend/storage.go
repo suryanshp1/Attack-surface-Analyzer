@@ -53,6 +53,7 @@ func (s *Server) migrateAndLoad() error {
 		if json.Unmarshal(runtimeJSON, &stored) == nil {
 			s.state.Members = stored.Members
 			s.state.AccessKeys = stored.AccessKeys
+			s.state.RecordDeletions = stored.RecordDeletions
 		}
 	}
 	s.state.Targets = []Target{}
@@ -206,7 +207,7 @@ func (s *Server) saveRelational() error {
 	if err = put("workspace_settings", "default", "", s.state.Settings); err != nil {
 		return err
 	}
-	if err = put("workspace_runtime", "default", "", State{Members: s.state.Members, AccessKeys: s.state.AccessKeys}); err != nil {
+	if err = put("workspace_runtime", "default", "", State{Members: s.state.Members, AccessKeys: s.state.AccessKeys, RecordDeletions: s.state.RecordDeletions}); err != nil {
 		return err
 	}
 	for _, t := range s.state.Targets {

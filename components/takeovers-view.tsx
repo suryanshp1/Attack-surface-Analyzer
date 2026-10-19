@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { BulkDeleteToolbar, SelectionCheckbox, useRecordSelection } from "@/components/record-selection";
 import {
   Flame,
   Search,
@@ -20,10 +21,12 @@ export function TakeoversView({
   takeovers = [],
   mutate,
   scope = "all",
+  canDelete = false,
 }: {
   takeovers?: SubdomainTakeover[];
   mutate?: (path: string, method: string, data?: unknown, message?: string) => Promise<boolean>;
   scope?: string;
+  canDelete?: boolean;
 }) {
   const [filter, setFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
@@ -45,6 +48,8 @@ export function TakeoversView({
     );
   });
 
+  const selectionKey = JSON.stringify([scope, query, filter]);
+  const selection = useRecordSelection(filtered.map(t => t.id), selectionKey);
   const updateStatus = async (id: string, newStatus: string) => {
     setBusyId(id);
     try {
@@ -91,6 +96,7 @@ export function TakeoversView({
         </div>
       </div>
 
+      {canDelete && mutate && <BulkDeleteToolbar key={selectionKey} selection={selection} resource="takeovers" mutate={mutate} />}
       {filtered.length === 0 ? (
         <div className="empty-state p-12 text-center border rounded-xl">
           <ShieldCheck size={36} className="mx-auto mb-3 opacity-60 text-emerald-600" />
@@ -106,6 +112,7 @@ export function TakeoversView({
           <table className="data-table responsive-table">
             <thead>
               <tr>
+                {canDelete && mutate && <th className="selection-cell"><SelectionCheckbox label="Select all filtered takeovers" checked={filtered.length > 0 && filtered.every(t => selection.selected.has(t.id))} mixed={selection.selected.size > 0 && selection.selected.size < filtered.length} onChange={() => selection.togglePage(filtered.map(t => t.id))} /></th>}
                 <th>Subdomain</th>
                 <th>Cloud Service</th>
                 <th>Terminal CNAME Target</th>
@@ -120,6 +127,7 @@ export function TakeoversView({
                 const isResolved = t.status === "resolved";
                 return (
                   <tr key={t.id}>
+                    {canDelete && mutate && <td className="selection-cell" data-label="Select"><SelectionCheckbox label={`Select takeover: ${t.subdomain} · ${t.serviceProvider}`} checked={selection.selected.has(t.id)} onChange={() => selection.toggle(t.id)} /></td>}
                     <td>
                       <div className="flex items-center gap-2">
                         <Flame

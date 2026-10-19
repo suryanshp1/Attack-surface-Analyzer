@@ -9,13 +9,18 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { dateTime, relative, type EndpointHazard } from "@/lib/types";
+import { BulkDeleteToolbar, SelectionCheckbox, useRecordSelection } from "@/components/record-selection";
 
 export function HazardsView({
   hazards = [],
   scope = "all",
+  canDelete = false,
+  mutate,
 }: {
   hazards?: EndpointHazard[];
   scope?: string;
+  canDelete?: boolean;
+  mutate?: (path: string, method: string, data?: unknown, message?: string) => Promise<boolean>;
 }) {
   const [activeClass, setActiveClass] = useState<string>("all");
   const [query, setQuery] = useState("");
@@ -32,6 +37,8 @@ export function HazardsView({
     return h.url.toLowerCase().includes(q) || h.parameter.toLowerCase().includes(q);
   });
 
+  const selectionKey = JSON.stringify([scope, query, activeClass]);
+  const selection = useRecordSelection(filtered.map(h => h.id), selectionKey);
   const hazardLabels: Record<string, string> = {
     all: "All Hazards",
     ssrf_candidate: "SSRF Candidates",
@@ -75,6 +82,7 @@ export function HazardsView({
         </div>
       </div>
 
+      {canDelete && mutate && <BulkDeleteToolbar key={selectionKey} selection={selection} resource="hazards" mutate={mutate} />}
       {/* Table / Empty State */}
       {filtered.length === 0 ? (
         <div className="empty-state p-12 text-center border rounded-xl">
@@ -91,6 +99,7 @@ export function HazardsView({
           <table className="data-table responsive-table">
             <thead>
               <tr>
+                {canDelete && mutate && <th className="selection-cell"><SelectionCheckbox label="Select all filtered hazards" checked={filtered.length > 0 && filtered.every(h => selection.selected.has(h.id))} mixed={selection.selected.size > 0 && selection.selected.size < filtered.length} onChange={() => selection.togglePage(filtered.map(h => h.id))} /></th>}
                 <th>Hazard Category</th>
                 <th>Parameter / File</th>
                 <th>Target Endpoint URL (Sanitized)</th>
@@ -103,6 +112,7 @@ export function HazardsView({
                 const isHigh = h.severity === "high" || h.severity === "critical";
                 return (
                   <tr key={h.id}>
+                    {canDelete && mutate && <td className="selection-cell" data-label="Select"><SelectionCheckbox label={`Select hazard: ${h.hazardClass} · ${h.url} · ${h.parameter}`} checked={selection.selected.has(h.id)} onChange={() => selection.toggle(h.id)} /></td>}
                     <td>
                       <span className="font-semibold text-xs px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">
                         {hazardLabels[h.hazardClass] || h.hazardClass}

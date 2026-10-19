@@ -4,9 +4,11 @@ Surfacer exposes a stateless Streamable HTTP MCP server at **`/mcp` on the web U
 
 ## Connection
 
-1. In Surfacer's access controls, create a member and an expiring access key for the AI client. Use a **viewer** for investigation or an **analyst** for scans and triage. Give each client its own key so it can be revoked independently.
-2. Add a remote MCP server in the client's configuration, select **Streamable HTTP**, and enter your Surfacer web URL followed by `/mcp`.
-3. Configure the request header `Authorization: Bearer <member-access-key>`. Keys start with `surf_key_`. Keep the actual key in the client's secret store or private local configuration.
+1. Open **Settings → MCP** (`/#settings?tab=MCP`) for the current deployment's endpoint, a copyable connection configuration, tool permissions, and troubleshooting. The endpoint is derived from the URL you are viewing; it is not a connection health check.
+2. Follow **Open Access** to **Settings → Access**. A workspace owner can create a member and an expiring access key for the AI client. Use a **viewer** for investigation or an **analyst** for scans and triage. Give each client its own key so it can be revoked independently.
+3. Add a remote MCP server in the client's configuration, select **Streamable HTTP**, and enter your Surfacer web URL followed by `/mcp`.
+4. Configure the request header `Authorization: Bearer <member-access-key>`. Keys start with `surf_key_`. Keep the actual key in the client's secret store or private local configuration. Settings copies placeholders only; it does not store or insert your real key.
+5. Connect and call `list_targets` to confirm access without starting a scan. Handle protocol errors and tool results with `isError: true` explicitly.
 
 The following illustrates the connection fields; configuration syntax differs between clients:
 
@@ -60,9 +62,26 @@ Observation text, URLs, evidence, and triage notes are untrusted data. AI client
 
 Partial, blocked, failed, and unfinished checks remain visible. Stage progress is not asset coverage; missing responses do not prove absence. Triage cannot manually resolve findings. The existing two-successful-scan lifecycle and historical URL labeling remain authoritative.
 
+Records deleted by a workspace owner are excluded from inventory, finding, endpoint, and scan reads, including `get_scan`. Deletion retains internal history; it does not resolve findings or establish coverage. MCP does not expose deletion tools. See [record cleanup](operations.md#delete-records-from-active-views) for roles, rediscovery, and persistence behavior.
+
 The implementation uses the pinned [official MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk/tree/v1.4.1) for protocol negotiation, schema validation, and Streamable HTTP. That version supports protocol revisions through `2025-11-25`; it does not claim support for later protocol revisions. No server sessions or standalone SSE notification stream are retained. Unsupported methods and protocol versions are handled by the SDK. Same-origin browser protections apply; cross-origin browser clients are not enabled.
 
-## Delivery plan
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| 400 while uploading a request | The request body was interrupted or unreadable; reconnect and send a complete request. |
+| 401 | Send an active member key in the Bearer header. Check expiry, revocation, and enabled membership. Workspace/service tokens and browser sessions do not grant MCP access. |
+| 403 | Writes require analyst or owner. Cross-origin browser requests are blocked. |
+| 405 on GET | Select Streamable HTTP, not a legacy standalone SSE transport. The stateless server does not retain a notification stream. |
+| 413 | Keep request bodies within 32 KiB; reduce arguments or note size. |
+| 503 or unreachable endpoint | Check web-to-API connectivity and client access to the web URL. Remote clients need a reachable HTTPS deployment; do not publish the internal API port. |
+| Connected but tools fail | Inspect JSON-RPC errors and `isError` results. Scans still require live workers, readiness, an unpaused workspace/target, and no duplicate active run. |
+| Client requests OAuth or a local executable | OAuth and stdio bridges are not implemented. Use a Streamable HTTP client with custom Bearer-header support. |
+
+Settings does not probe MCP or start scans on your behalf. A displayed endpoint or successful copy is not proof of connectivity. Use `list_targets` from the client to verify the authenticated connection.
+
+## Implementation and possible enhancements
 
 The first increment is implemented here: authenticated transport, bounded inventory tools, existing scan/triage actions, and regression coverage with an actual SDK client. No changes to storage or scanner network boundaries are needed.
 

@@ -85,6 +85,18 @@ Apply migrations and role grants, restore the corresponding evidence bucket, and
 
 `docker compose down` retains named volumes. Do not use `down -v` unless you intend to delete stored workspace and evidence data.
 
+## Delete records from active views
+
+Workspace owners can delete records from Findings, Inventory, Endpoints (including historical URLs), Scan activity, Hazards, and Takeovers. Check individual rows, use **Select this page**, or choose **Select all matching** to include filtered results across pages. Selection follows the current target scope, search, and filters. Changing those filters clears selection; new live observations are not automatically selected. Review the selected count and confirm **Delete records**. Viewers and analysts cannot delete records, including through direct API calls.
+
+Only finished scan runs can be deleted (completed, partial, failed, or canceled). Active queued/running/retrying runs are excluded from selection and rejected by the API. Targets and append-only audit records have no deletion control.
+
+Deletion removes records from active workspace views, reports, relevant metrics, and MCP reads. It retains internal history, fingerprints, timestamps, triage decisions, scan lineage, checkpoints, and evidence references. It is not a storage or evidence purge, finding resolution, or proof of a clean assessment. Deleting an asset hides its nested endpoints from active inventory; it does not delete findings or scan history. Deleting an endpoint or scan does not cascade into findings. A fresh scan that observes a deleted record may bring it back while preserving its history; an existing run or retained recovery checkpoint does not undo deletion. Deleted finished scan history stays hidden while remaining available internally for scheduling and lifecycle continuity.
+
+The API accepts `DELETE /api/<resource>` with `{"ids":["record-id"]}`, for resources `findings`, `assets`, `endpoints`, `scans`, `hazards`, and `takeovers`. `DELETE /api/<resource>/<id>` deletes a single record. Each request validates 1–100 unique existing IDs before mutation and commits deletion and audit entries together. Repeating an already deleted ID is safe. The UI sends larger selections as bounded batches; a failure stops further batches and reports confirmed progress. Refresh before retrying an interrupted operation because a lost response may follow a successful commit.
+
+Deletion markers use existing JSON/JSONB storage; no schema migration or additional database privileges are needed. JSON development state and PostgreSQL backups retain these markers. Evidence retention continues to follow the existing policy.
+
 ## Troubleshooting
 
 | Symptom | What to check |

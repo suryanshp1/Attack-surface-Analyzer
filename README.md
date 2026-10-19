@@ -10,6 +10,7 @@ Self-hosted external attack surface monitoring for domains you manage. Discover 
 
 - **Real observations:** nine open-source scanners feed a shared inventory with discovery provenance, service details, and TLS evidence.
 - **Investigation in one place:** filter assets and endpoints, inspect findings, review DNS posture and takeover candidates, record triage decisions, and export CSV or PDF reports.
+- **Record cleanup:** owners can select rows, a page, or all filtered results and delete findings, inventory, endpoints, finished scan history, hazards, and takeovers from active views. [Internal history is retained](docs/operations.md#delete-records-from-active-views).
 - **Recoverable scans:** bounded concurrency, workload-aware budgets, and durable checkpoints for completed port batches, crawl seeds, and detection services. Resume retries unfinished work.
 - **Live finding visibility:** findings publish into the workspace as each stage and detection batch commits, with consolidated stage logs.
 - **Coverage-aware history:** incomplete checks retain prior findings, endpoints, and takeover candidates instead of treating missing results as resolved (two clean completed scans required for resolution).
@@ -141,7 +142,7 @@ Incomplete stages and failed or skipped JavaScript downloads cannot establish cl
 
 ## MCP access
 
-Connect a compatible Streamable HTTP client to **`http://localhost:3000/mcp`**, or `/mcp` on your deployed HTTPS web URL. Create an expiring member key under **Settings → Access** and configure the client with `Authorization: Bearer <member-access-key>`.
+Open **Settings → MCP** for the deployment endpoint, copyable configuration, setup guide, tool permissions, and troubleshooting. Connect a compatible Streamable HTTP client to **`http://localhost:3000/mcp`**, or `/mcp` on your deployed HTTPS web URL. Create an expiring member key under **Settings → Access** and configure the client with `Authorization: Bearer <member-access-key>`.
 
 | Tools | Minimum role |
 | --- | --- |

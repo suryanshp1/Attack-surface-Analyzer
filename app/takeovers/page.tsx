@@ -47,6 +47,7 @@ export default function TakeoversPage() {
         </div>
       ) : (
         <TakeoversView
+          canDelete={state?.me?.role === "owner"}
           takeovers={state?.takeovers || []}
           mutate={async (path, method, data) => {
             await api(path, method, data);

@@ -42,7 +42,11 @@ export default function HazardsPage() {
           <Loader2 size={24} className="animate-spin mx-auto opacity-50" />
         </div>
       ) : (
-        <HazardsView hazards={state?.hazards || []} />
+        <HazardsView hazards={state?.hazards || []} canDelete={state?.me?.role === "owner"} mutate={async (path, method, data) => {
+          await api(path, method, data);
+          setState(await api("state"));
+          return true;
+        }} />
       )}
     </div>
   );
