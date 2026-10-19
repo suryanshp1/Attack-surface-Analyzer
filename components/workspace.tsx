@@ -1190,8 +1190,8 @@ export default function Workspace() {
             </p>
             <h3>Your evidence stays yours</h3>
             <p>
-              Evidence is shown as inert text. Secrets are redacted, and
-              optional AI triage is off. Review the local README for deployment
+              Evidence is shown as inert text. Secrets are redacted, and no data
+              is sent to third parties. Review the local README for deployment
               and scope details.
             </p>
             <Button
@@ -3207,23 +3207,6 @@ function SettingsPage({
                     period. Finding summaries and audit records are retained.
                   </small>
                 </label>
-              </div>
-              <div className="settings-section">
-                <div>
-                  <h2>Optional AI triage</h2>
-                  <p>Your evidence stays inside this deployment.</p>
-                </div>
-                <div className="integration-off">
-                  <ShieldCheck size={25} />
-                  <div>
-                    <strong>Off by default</strong>
-                    <p>
-                      Jev is a later-phase integration. No evidence is sent to
-                      third parties.
-                    </p>
-                  </div>
-                  <Badge>Not connected</Badge>
-                </div>
               </div>
             </>
           ) : (

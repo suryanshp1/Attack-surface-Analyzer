@@ -5,7 +5,7 @@ Web Attack Surface Analyzer (working name: Surfacer) continuously discovers ever
 Problem. Teams do not know their full external footprint. Subdomains, forgotten staging sites, open ports, stale certificates and exposed files appear and disappear faster than manual reviews can track. Commercial ASM tools solve this but are costly and closed. Existing OSS tools (nuclei, subfinder, httpx and others) are powerful but are CLIs: no ownership checks, no history, no UI, no safe multi-user operation.
 Product vision. A self-hostable platform that turns the OSS recon ecosystem into a safe, always-on service: prove you own a domain, get an inventory within minutes, see new exposures as they appear, and track each finding until it is fixed.
 Scope of this PRD. The first production release (MVP) plus the next two phases. It covers external, black-box discovery and detection against assets the customer has verified. It does not cover exploitation, internal network scanning, or source-code analysis.
-Optional AI triage. Findings can be scored by Jev, a hosted decision model from TypeSafe AI that returns typed answers (a yes/no probability, a score or a choice) with a confidence value. Jev is proprietary and cannot be self-hosted, so it is an optional plugin that is off by default; the core product must work with open-source tools alone. Section 15 records how this PRD changed after reviewing a second research report.
+AI triage (rejected). Third-party hosted decision models were formally evaluated and rejected to uphold the zero-external-telemetry and 100% self-hosted open-source core invariants. Finding triage is performed directly by authenticated analysts via the UI and MCP tools without sending evidence to third parties. Section 15 records this architecture decision.
 2. Goals, non-goals and success metrics
 The MVP succeeds if a new user can verify a domain and see a trustworthy asset inventory with prioritized findings in their first session, and if scans never touch anything the user does not own.
 Goals
@@ -136,8 +136,8 @@ As an admin, I add more workers to speed up scans.
 P1
 US-18
 Triage
-As an analyst, I can opt in to AI triage that ranks findings and suggests likely false positives, and I can override every suggestion.
-P2
+As an analyst, I can record triage decisions (accepted risk, false positive, open) with documented rationale directly in the workspace or via authenticated MCP tools.
+P1
 US-19
 Prioritization
 As a user, I see KEV status and EPSS score next to CVE-based findings.
@@ -257,9 +257,8 @@ Historical URL discovery from public archives (gau).
 Historical URLs are flagged as such and used as crawl seeds only inside verified scope.
 P1
 FR-27
-Optional AI triage plugin behind an adapter (Jev first): off by default, org opt-in, only redacted fields sent, suggestions never resolve or delete findings, analysts can override.
-Disabling or losing the plugin changes no core behavior; every suggestion is logged with its confidence and the analyst's final decision.
-P2
+Member-attributed manual triage: analysts and owners record finding status (open, accepted risk, false positive) with required notes and audit trails. Third-party hosted AI triage is rejected.
+P0
 6. Safety, legal and abuse-prevention requirements
 These are release blockers: the product sends attack-like traffic, so weak controls create legal and reputational risk for customers and for us. Nothing in this section is a P1 or later.
 Ownership verification (SAF-1 to SAF-5)
@@ -519,11 +518,11 @@ CISA KEV and EPSS feeds
 Public data; verify terms
 P1
 Daily refresh
-AI triage (optional)
-Jev (TypeSafe AI)
-Proprietary, hosted only
-P2, off by default
-No open weights or self-hosting; early access since September 15, 2026
+AI triage (third-party)
+None (Rejected)
+Self-hosted only
+Rejected
+External hosted models rejected; MCP enables secure client-side integration without SaaS egress
 13. Release plan and milestones
 The MVP is phases 1 and 2, about six weeks; the safety controls land in phase 1, before any scan reaches a real target.
 Gate
@@ -562,12 +561,9 @@ Low default rates, backoff on errors, concurrency caps, kill switch
 Hosting costs grow with scan volume
 Margin pressure
 Per-org quotas, incremental rescans, shared evidence storage with retention limits
-AI triage vendor is early access and hosted only; terms, signups or behavior may change
-Feature breaks or becomes unavailable
-Optional adapter, off by default, no core dependency; test on labeled findings before relying on it
-Evidence sent to a third-party AI service exposes customer data
-Data leak, loss of trust
-Per-org opt-in, field-level redaction, audit log of every call
+Third-party hosted AI models expose customer evidence
+Data leak, loss of trust, vendor lock-in
+Rejected completely; all processing stays local/self-hosted; MCP tools provide opt-in client access with scoped tokens
 Stealth or evasion features create legal and ethical exposure
 Abuse claims, blocked scans
 Attributable scanning with a published header; back off instead of evading
@@ -577,14 +573,12 @@ Open questions
 • Queue choice: River on Postgres (fewer services) or a Redis-based queue (richer flow features)?
 • Do we need authenticated scanning in the first year, or is public-surface coverage enough?
 • What is the official policy for opt-out requests from third-party target owners?
-• Do we integrate Jev in the first year? It is early access, and one source reports new signups paused in late September 2026.
-• What labeled data will we use to test AI triage before any automatic labeling is enabled?
+• Decision: Third-party AI triage is completely rejected. All core ASM discovery, classification, and triage remain strictly self-hosted.
 • Which Slack and Jira features are needed at launch, and which can wait?
 Sources (search results reviewed during research): Nuclei releases, exact-surface, Open-ASM, gridscan, LWN on the Nmap license, TruffleHog license notes, Detectify asset verification, Crawlee on SSRF. Information as of October 2026.
 15. Changes from the second research report
 A second research report on the same idea was reviewed on October 13, 2026. This PRD adopts its operational detail but keeps the Go backend, the verification-first safety model and an open-source-only core.
-Correction. Earlier I read "jev" as a typo. It is Jev, a model from TypeSafe AI released on September 15, 2026, and it is now an optional plugin in this PRD.
-About Jev (as of October 2026). TypeSafe describes Jev as a hosted decision model with three question types: a yes/no probability (called noul), a score and a choice. It accepts text input only, returns no explanations, has no open weights or self-hosting option, and was priced at $0.042 per million input tokens with free output. Access was early access behind a waitlist, and one source reports new signups paused in late September 2026. Its speed and cost multiples are vendor claims that I did not verify.
+Evaluation & Rejection of Third-Party AI Triage. Proprietary hosted decision models evaluated for finding triage have no self-hosting option, no open weights, closed waitlist access, and would require transmitting customer finding data to third-party infrastructure. They have been completely rejected and removed from Surfacer's product roadmap.
 Report item
 Decision
 Reason
@@ -630,9 +624,9 @@ FR-25, P1.
 Attack surface graph, trend and MTTR charts, Jira tickets
 Deferred
 Useful, not scheduled; candidates for P2.
-Jev as the built-in triage layer
-Changed to optional plugin
-Proprietary, hosted only and early access; conflicts with the open-source-only goal and sends evidence to a third party (FR-27, SAF-21).
+Third-party AI as a triage layer
+Rejected and removed
+Proprietary, hosted only and third-party SaaS; violates the self-hosted open-source core and zero-egress evidence confidentiality invariants.
 Auto-suppress findings when false-positive confidence exceeds 0.90
 Changed
 Suggestions only; never resolve or delete. Automatic labeling is considered only after validation against analyst-labeled findings.
@@ -644,4 +638,4 @@ PRD keeps it
 Verification stays a release blocker (section 6).
 Not verified. The report's tool nuclei-cve-analyzer and its Go image version were not checked, so neither appears in this PRD.
 Where the PRD changed: sections 1, 2, 4, 5, 6, 7, 11, 12 and 14, plus this section.
-Additional sources (search results reviewed October 13, 2026): TypeSafe System One docs, TypeSafe launch post, TrueFoundry on Jev hosting, Jev in Node.js, subfinder README, nuclei help listing.
+Additional sources (search results reviewed October 13, 2026): subfinder README, nuclei help listing.

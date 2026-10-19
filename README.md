@@ -174,7 +174,7 @@ See [MCP integration](docs/mcp.md) for client configuration, tool arguments, res
 - One workspace and one API process; no organization isolation, SSO, or MFA.
 - Detection uses a small curated template set. TLS inspection reports negotiated protocol/cipher, not exhaustive enumeration.
 - Large inventories can require multiple bounded scan passes. Partial scans preserve data; they do not establish complete coverage.
-- Configured Slack, Discord, and generic webhooks use best-effort delivery; durable delivery queues and retries are not implemented. Daily KEV/EPSS enrichment is not implemented. AI triage is disabled.
+- Configured Slack, Discord, and generic webhooks use best-effort delivery; durable delivery queues and retries are not implemented. Daily KEV/EPSS enrichment is not implemented.
 - The OpenAPI reference lists routes and roles; complete request schemas and generated clients are pending.
 - A complete database-plus-evidence disaster recovery drill remains outstanding.
 

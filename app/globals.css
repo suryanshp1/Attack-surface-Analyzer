@@ -2012,30 +2012,6 @@ textarea.text-input {
   grid-template-columns: 1fr 1fr;
   gap: 20px;
 }
-.integration-off {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  padding: 20px;
-  background: var(--soft);
-  border-radius: 18px;
-}
-.integration-off > svg {
-  color: var(--muted);
-}
-.integration-off strong {
-  font-size: 13px;
-  font-weight: 500;
-}
-.integration-off p {
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 5px;
-  max-width: 260px;
-}
-.integration-off > .badge {
-  margin-left: auto;
-}
 .pause-control {
   display: flex;
   justify-content: space-between;
@@ -2675,12 +2651,6 @@ textarea.text-input {
   }
   .settings-section {
     gap: 30px;
-  }
-  .integration-off {
-    flex-wrap: wrap;
-  }
-  .integration-off > .badge {
-    margin-left: 0;
   }
 }
 @media (max-width: 1000px) {

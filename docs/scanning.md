@@ -69,7 +69,7 @@ HTTPS payloads remain encrypted: the gateway paces tunnel creation, while scanne
 
 ## Evidence
 
-Finding evidence is redacted, capped at 16 KiB, and rendered as inert text. Sensitive new configuration matches omit raw response bodies. Raw evidence and stage objects are cleaned according to retention settings every 15 minutes; summary and audit records remain. AI triage is disabled and evidence is not sent to third-party AI services.
+Finding evidence is redacted, capped at 16 KiB, and rendered as inert text. Sensitive new configuration matches omit raw response bodies. Raw evidence and stage objects are cleaned according to retention settings every 15 minutes; summary and audit records remain. Evidence is self-contained and is never sent to third-party services.
 
 ## Pipeline measurements
 
