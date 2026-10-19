@@ -17,12 +17,12 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request, actor Actor) {
 	metric := func(name string, value int) { fmt.Fprintf(w, "# TYPE %s gauge\n%s %d\n", name, name, value) }
 	metric("surfacer_targets", len(s.state.Targets))
 	metric("surfacer_assets", len(s.publicState().Assets))
-	metric("surfacer_historical_urls", len(s.state.History))
+	metric("surfacer_historical_urls", len(s.visibleEndpoints(s.state.History)))
 	metric("surfacer_workers_online", s.publicState().Runtime.Workers)
 	for _, status := range []string{"queued", "running", "completed", "partial", "failed", "canceled"} {
 		n := 0
 		for _, sc := range s.state.Scans {
-			if sc.Status == status {
+			if sc.Status == status && !s.recordDeleted("scans", sc.ID) {
 				n++
 			}
 		}
@@ -31,7 +31,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request, actor Actor) {
 	for _, severity := range []string{"critical", "high", "medium", "low", "info"} {
 		n := 0
 		for _, f := range s.state.Findings {
-			if f.Status == "open" && f.Severity == severity {
+			if f.Status == "open" && f.Severity == severity && f.DeletedAt == "" {
 				n++
 			}
 		}

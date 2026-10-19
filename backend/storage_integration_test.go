@@ -103,5 +103,34 @@ func TestStorageIntegration(t *testing.T) {
 	if _, err = db.Exec(ctx, "CREATE TABLE forbidden_runtime_ddl (id integer)"); err == nil {
 		t.Fatal("runtime role can mutate schema")
 	}
+	if count, err := s.deleteFindings([]string{finding.ID}); err != nil || count != 1 {
+		t.Fatal("could not delete finding with restricted application role", count, err)
+	}
+	if err = s.save(); err != nil {
+		t.Fatal("could not persist finding tombstone", err)
+	}
+	deletedReload := &Server{ctx: ctx, db: db, state: seed(false)}
+	if err = deletedReload.migrateAndLoad(); err != nil {
+		t.Fatal(err)
+	}
+	if len(deletedReload.publicState().Findings) != 0 || len(deletedReload.state.Findings) != 1 || deletedReload.state.Findings[0].DeletedAt == "" || deletedReload.state.Findings[0].FirstSeen != finding.FirstSeen || deletedReload.state.Findings[0].EvidenceKey != finding.EvidenceKey {
+		t.Fatal("PostgreSQL reload lost deletion or retained history")
+	}
+	for resource, ids := range map[string][]string{"assets": {s.state.Assets[0].ID}, "endpoints": {"fixture-endpoint", "historic-fixture"}, "scans": {"storage-scan"}} {
+		if _, err := s.deleteRecords(resource, ids); err != nil {
+			t.Fatal(resource, err)
+		}
+	}
+	if err = s.save(); err != nil {
+		t.Fatal(err)
+	}
+	recordReload := &Server{ctx: ctx, db: db, state: seed(false)}
+	if err = recordReload.migrateAndLoad(); err != nil {
+		t.Fatal(err)
+	}
+	visible := recordReload.publicState()
+	if len(visible.Assets) != 0 || len(visible.Scans) != 0 || len(visible.History) != 0 || len(recordReload.state.Assets) != 1 || len(recordReload.state.Scans) != 1 || len(recordReload.state.RecordDeletions) != 4 {
+		t.Fatal("PostgreSQL runtime metadata did not retain record deletions and history")
+	}
 	t.Log("Postgres records, MinIO evidence, redaction, and database role restrictions verified")
 }

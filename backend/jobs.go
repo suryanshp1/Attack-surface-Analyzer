@@ -122,6 +122,7 @@ func fingerprint(values ...string) string {
 }
 func (s *Server) publicState() State {
 	out := s.state
+	out.RecordDeletions = nil
 	out.AccessKeys = append([]AccessKey{}, s.state.AccessKeys...)
 	for i := range out.AccessKeys {
 		out.AccessKeys[i].Hash = ""
@@ -133,18 +134,47 @@ func (s *Server) publicState() State {
 	}
 	out.Assets = []Asset{}
 	for _, a := range s.state.Assets {
-		if !a.Removed {
-			a = publicAsset(a)
+		if !a.Removed && !s.recordDeleted("assets", a.ID) {
+			a = s.visibleAsset(a)
 			out.Assets = append(out.Assets, a)
 		}
 	}
-	out.Findings = append([]Finding{}, s.state.Findings...)
+	out.Findings = []Finding{}
+	for _, f := range s.state.Findings {
+		if f.DeletedAt == "" {
+			out.Findings = append(out.Findings, f)
+		}
+	}
 	for i := range out.Findings {
 		clarifyCertificateFinding(&out.Findings[i])
 	}
-	out.Scans = append([]Scan{}, s.state.Scans...)
-	for i := range out.Scans {
-		out.Scans[i] = publicScan(out.Scans[i])
+	out.Scans = []Scan{}
+	for _, sc := range s.state.Scans {
+		if !s.recordDeleted("scans", sc.ID) {
+			out.Scans = append(out.Scans, publicScan(sc))
+		}
+	}
+	out.History = s.visibleEndpoints(s.state.History)
+	out.Hazards = []EndpointHazard{}
+	for _, h := range s.state.Hazards {
+		if !s.recordDeleted("hazards", h.ID) {
+			out.Hazards = append(out.Hazards, h)
+		}
+	}
+	out.Takeovers = []SubdomainTakeover{}
+	for _, to := range s.state.Takeovers {
+		if !s.recordDeleted("takeovers", to.ID) {
+			out.Takeovers = append(out.Takeovers, to)
+		}
+	}
+	for i := range out.Targets {
+		count := 0
+		for _, a := range out.Assets {
+			if a.TargetID == out.Targets[i].ID {
+				count++
+			}
+		}
+		out.Targets[i].Assets = count
 	}
 	if out.DNSPosture == nil {
 		out.DNSPosture = []DomainDNSPosture{}
@@ -1251,6 +1281,7 @@ func (s *Server) publishScanAssets(sc *Scan, stamp string) {
 // checkpoint commits. It is idempotent and never resolves findings: lifecycle
 // resolution remains in normalize after a complete, successful scan.
 func (s *Server) publishScanFindings(sc *Scan, stamp string) map[string]bool {
+	s.restoreObservedRecords(sc)
 	index := make(map[string]int, len(s.state.Findings))
 	for i, f := range s.state.Findings {
 		index[f.ID] = i
@@ -1268,6 +1299,14 @@ func (s *Server) publishScanFindings(sc *Scan, stamp string) map[string]bool {
 		found[f.ID] = true
 		if i, ok := index[f.ID]; ok {
 			old := s.state.Findings[i]
+			// Replayed or retained checkpoints must not undo an owner's deletion.
+			// Only observations attributed to a scan begun after deletion return
+			// the record to active views; triage and first-seen history survive.
+			f.DeletedAt = old.DeletedAt
+			if old.DeletedAt != "" && sc.StartedAt > old.DeletedAt && f.ScanID == sc.ID {
+				f.DeletedAt = ""
+				s.emit("finding", "Deleted finding rediscovered", f.Title+" · "+f.Host, stamp)
+			}
 			f.FirstSeen, f.Notes, f.Status, f.EvidenceKey = old.FirstSeen, old.Notes, old.Status, old.EvidenceKey
 			if f.ScanID == "" {
 				f.ScanID = old.ScanID
@@ -1331,7 +1370,7 @@ func (s *Server) recountAssetFindings(targetID string) {
 		}
 		a.Findings, a.Severity = 0, "none"
 		for _, f := range s.state.Findings {
-			if f.Host == a.Host && f.Status == "open" {
+			if f.Host == a.Host && f.Status == "open" && f.DeletedAt == "" {
 				a.Findings++
 				if ranks[f.Severity] < ranks[a.Severity] {
 					a.Severity = f.Severity

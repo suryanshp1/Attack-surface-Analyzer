@@ -85,6 +85,8 @@ import { TakeoversView } from "@/components/takeovers-view";
 import { GovernanceView } from "@/components/governance-view";
 import { HazardsView } from "@/components/hazards-view";
 import { WebhooksPanel } from "@/components/webhooks-panel";
+import { MCPPanel } from "@/components/mcp-panel";
+import { BulkDeleteToolbar, SelectionCheckbox, useRecordSelection } from "@/components/record-selection";
 
 const navigation = [
   { name: "Overview", icon: LayoutDashboard },
@@ -109,6 +111,8 @@ const isSecurityIssue = (finding: Finding) =>
   !finding.category || ["vulnerability", "secret"].includes(finding.category);
 const activeScanStatus = (status: string) =>
   ["running", "queued", "retrying"].includes(status);
+const finishedScanStatus = (status: string) =>
+  ["completed", "partial", "failed", "canceled"].includes(status);
 function stageStatus(scan: Scan, status: string) {
   if (activeScanStatus(scan.status)) return status;
   return status === "running"
@@ -1038,6 +1042,7 @@ export default function Workspace() {
           )}
           {page === "Inventory" && (
             <Inventory
+              mutate={mutate}
               state={state}
               assets={scopedAssets}
               query={query}
@@ -1050,6 +1055,8 @@ export default function Workspace() {
           )}
           {page === "Endpoints" && (
             <EndpointsPage
+              canDelete={state.me?.role === "owner"}
+              mutate={mutate}
               history={(state.history ?? []).filter(
                 (e) => scope === "all" || e.targetId === scope,
               )}
@@ -1062,6 +1069,9 @@ export default function Workspace() {
           )}
           {page === "Findings" && (
             <Findings
+              key={JSON.stringify([scope, query, route.filters.findingStatus, route.filters.severity, route.filters.findingCategory])}
+              canDelete={state.me?.role === "owner"}
+              mutate={mutate}
               findings={scopedFindings}
               query={query}
               setQuery={setQuery}
@@ -1078,6 +1088,8 @@ export default function Workspace() {
           )}
           {page === "Takeovers" && (
             <TakeoversView
+              key={scope}
+              canDelete={state.me?.role === "owner"}
               takeovers={state.takeovers || []}
               scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
               mutate={mutate}
@@ -1091,6 +1103,9 @@ export default function Workspace() {
           )}
           {page === "Hazards" && (
             <HazardsView
+              key={scope}
+              canDelete={state.me?.role === "owner"}
+              mutate={mutate}
               hazards={state.hazards || []}
               scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
             />
@@ -1109,6 +1124,8 @@ export default function Workspace() {
           )}
           {page === "Scan activity" && (
             <Scans
+              canDelete={state.me?.role === "owner"}
+              mutate={mutate}
               scans={state.scans.filter(
                 (s) => scope === "all" || s.targetId === scope,
               )}
@@ -1738,6 +1755,8 @@ function SurfaceMap({
 }
 
 function EndpointsPage({
+  canDelete,
+  mutate,
   assets,
   history,
   query,
@@ -1745,6 +1764,8 @@ function EndpointsPage({
   run,
   selectAsset,
 }: {
+  canDelete: boolean;
+  mutate: Mutation;
   history: NonNullable<State["history"]>;
   assets: Asset[];
   query: string;
@@ -1772,6 +1793,10 @@ function EndpointsPage({
   );
   const { page, setPage, start } = useResultPage(rows.length);
   const filtered = !!query || kind !== "all";
+  const route = useWorkspaceRoute();
+  const selection = useRecordSelection(rows.map(e => e.id), JSON.stringify([route.scope, query, kind, mode]));
+  const visibleIDs = rows.slice(start, start + 25).map(e => e.id);
+  const selectedOnPage = visibleIDs.filter(id => selection.selected.has(id)).length;
   return (
     <>
       <div className="tab-line" role="group" aria-label="Endpoint source">
@@ -1832,6 +1857,7 @@ function EndpointsPage({
           {rows.length} {historical ? "historical URLs" : "observed URLs"}
         </span>
       </div>
+      {canDelete && <BulkDeleteToolbar key={JSON.stringify([route.scope, query, kind, mode])} selection={selection} resource="endpoints" mutate={mutate} pageIDs={visibleIDs} />}
       {!rows.length ? (
         <Empty
           title={
@@ -1868,6 +1894,7 @@ function EndpointsPage({
           <table className="data-table responsive-table endpoint-table">
             <thead>
               <tr>
+                {canDelete && <th className="selection-cell"><SelectionCheckbox label="Select all endpoints on this page" checked={visibleIDs.length > 0 && selectedOnPage === visibleIDs.length} mixed={selectedOnPage > 0 && selectedOnPage < visibleIDs.length} onChange={() => selection.togglePage(visibleIDs)} /></th>}
                 <th>Endpoint</th>
                 <th>Method / type</th>
                 <th>Observation</th>
@@ -1880,6 +1907,7 @@ function EndpointsPage({
                 const a = assets.find((a) => a.host === e.host);
                 return (
                   <tr key={e.host + e.id}>
+                    {canDelete && <td className="selection-cell" data-label="Select"><SelectionCheckbox label={`Select endpoint: ${e.method} ${e.url}`} checked={selection.selected.has(e.id)} onChange={() => selection.toggle(e.id)} /></td>}
                     <td data-label="Endpoint">
                       <strong className="endpoint-url">{e.url}</strong>
                       <small className="endpoint-source">{e.source}</small>
@@ -2011,6 +2039,7 @@ function SearchField({
   );
 }
 function Inventory({
+  mutate,
   state,
   assets,
   query,
@@ -2020,6 +2049,7 @@ function Inventory({
   select,
   add,
 }: {
+  mutate: Mutation;
   state: State;
   assets: Asset[];
   query: string;
@@ -2059,6 +2089,11 @@ function Inventory({
         : a.host.localeCompare(b.host),
     );
   const { page, setPage, start } = useResultPage(rows.length);
+  const selectionKey = JSON.stringify([scope, query, tech, exposure, port]);
+  const selection = useRecordSelection(rows.map(a => a.id), selectionKey);
+  const visibleIDs = rows.slice(start, start + 25).map(a => a.id);
+  const selectedOnPage = visibleIDs.filter(id => selection.selected.has(id)).length;
+  const canDelete = state.me?.role === "owner";
   return (
     <>
       <div className="tab-line">
@@ -2125,10 +2160,12 @@ function Inventory({
           </select>
         </div>
       </div>
+      {canDelete && <BulkDeleteToolbar key={selectionKey} selection={selection} resource="assets" mutate={mutate} pageIDs={visibleIDs} />}
       <div className="table-wrap">
         <table className="data-table responsive-table inventory-table">
           <thead>
             <tr>
+              {canDelete && <th className="selection-cell"><SelectionCheckbox label="Select all assets on this page" checked={visibleIDs.length > 0 && selectedOnPage === visibleIDs.length} mixed={selectedOnPage > 0 && selectedOnPage < visibleIDs.length} onChange={() => selection.togglePage(visibleIDs)} /></th>}
               <th>Asset</th>
               <th>Technology</th>
               <th>Ports</th>
@@ -2145,6 +2182,7 @@ function Inventory({
               );
               return (
                 <tr key={a.id} onClick={() => select(a)}>
+                  {canDelete && <td className="selection-cell" data-label="Select"><SelectionCheckbox label={`Select asset: ${a.host}`} checked={selection.selected.has(a.id)} onChange={() => selection.toggle(a.id)} /></td>}
                   <td data-label="Asset">
                     <button
                       className="asset-cell"
@@ -2284,6 +2322,8 @@ function Inventory({
 }
 
 function Findings({
+  canDelete,
+  mutate,
   findings,
   query,
   setQuery,
@@ -2291,6 +2331,8 @@ function Findings({
   clearScope,
   scopeName,
 }: {
+  canDelete: boolean;
+  mutate: Mutation;
   findings: Finding[];
   query: string;
   setQuery: (s: string) => void;
@@ -2398,6 +2440,10 @@ function Findings({
     });
   const { page, setPage, start } = useResultPage(rows.length);
   const visible = rows.slice(start, start + 25);
+  const route = useWorkspaceRoute();
+  const selection = useRecordSelection(rows.map(f => f.id), JSON.stringify([route.scope, query, status, severity, category]));
+  const visibleIDs = visible.map(f => f.id);
+  const selectedOnPage = visibleIDs.filter(id => selection.selected.has(id)).length;
   return (
     <>
       <p className="findings-context">
@@ -2516,10 +2562,12 @@ function Findings({
           Export filtered findings
         </button>
       </div>
+      {canDelete ? <BulkDeleteToolbar selection={selection} resource="findings" mutate={mutate} pageIDs={visibleIDs} /> : <p className="field-hint">Only workspace owners can delete records.</p>}
       <div className="table-wrap">
         <table className="data-table responsive-table findings-table">
           <thead>
             <tr>
+              {canDelete && <th className="selection-cell"><SelectionCheckbox label="Select all findings on this page" checked={visible.length > 0 && selectedOnPage === visible.length} mixed={selectedOnPage > 0 && selectedOnPage < visible.length} onChange={() => selection.togglePage(visibleIDs)} /></th>}
               <th>Finding & Discovery</th>
               <th>Severity</th>
               <th>Target Asset</th>
@@ -2536,7 +2584,7 @@ function Findings({
                   (index === 0 ||
                     visible[index - 1].template !== f.template) && (
                     <tr className="group-row">
-                      <th colSpan={7}>
+                      <th colSpan={canDelete ? 8 : 7}>
                         {f.template} ·{" "}
                         {
                           rows.filter((row) => row.template === f.template)
@@ -2547,6 +2595,7 @@ function Findings({
                     </tr>
                   )}
                 <tr onClick={() => select(f.id)}>
+                  {canDelete && <td className="selection-cell" data-label="Select"><SelectionCheckbox label={`Select finding: ${f.title} · ${f.host}`} checked={selection.selected.has(f.id)} onChange={() => selection.toggle(f.id)} /></td>}
                   <td data-label="Finding">
                     <button
                       className="finding-title-cell"
@@ -3029,20 +3078,28 @@ function ScanCoverage({ scan }: { scan: Scan }) {
 }
 
 function Scans({
+  canDelete,
+  mutate,
   scans,
   select,
   run,
 }: {
+  canDelete: boolean;
+  mutate: Mutation;
   scans: Scan[];
   select: (s: Scan) => void;
   run: () => void;
 }) {
   const [filter, setFilter] = useWorkspaceFilter("scanStatus", "all");
+  const route = useWorkspaceRoute();
   const rows = scans
     .filter((s) => filter === "all" || s.status === filter)
     .slice()
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const { page, setPage, start } = useResultPage(rows.length);
+  const selectionKey = JSON.stringify([route.scope, filter]);
+  const selection = useRecordSelection(rows.filter(s => finishedScanStatus(s.status)).map(s => s.id), selectionKey);
+  const visibleIDs = rows.slice(start, start + 25).filter(s => finishedScanStatus(s.status)).map(s => s.id);
   return (
     <>
       <div className="tab-line">
@@ -3069,6 +3126,10 @@ function Scans({
           </button>
         ))}
       </div>
+      {canDelete && <>
+        <BulkDeleteToolbar key={selectionKey} selection={selection} resource="scans" mutate={mutate} pageIDs={visibleIDs} />
+        <div className="bulk-page-selection"><SelectionCheckbox label="Select all finished scans on this page" checked={visibleIDs.length > 0 && visibleIDs.every(id => selection.selected.has(id))} mixed={visibleIDs.some(id => selection.selected.has(id)) && !visibleIDs.every(id => selection.selected.has(id))} onChange={() => selection.togglePage(visibleIDs)} /><span>Select finished scans on this page. Active scans cannot be deleted.</span></div>
+      </>}
       <div className="scan-list scan-history">
         {rows.slice(start, start + 25).map((scan) => {
           const problem = scan.stages.find(
@@ -3080,6 +3141,7 @@ function Scans({
           return (
             <article className="scan-card scan-history-row" key={scan.id}>
               <div className="scan-history-identity">
+                {canDelete && finishedScanStatus(scan.status) && <SelectionCheckbox label={`Select scan: ${scan.domain} · ${dateTime(scan.startedAt)}`} checked={selection.selected.has(scan.id)} onChange={() => selection.toggle(scan.id)} />}
                 <button onClick={() => select(scan)} className="scan-domain">
                   {scan.domain}
                   <ArrowUpRight size={16} />
@@ -3169,17 +3231,20 @@ function SettingsPage({
   audit: State["audit"];
   mutate: Mutation;
 }) {
-  const [tab, setTab] = useState("General"),
-    [form, setForm] = useState(settings),
+  const [requestedTab, setTab] = useWorkspaceFilter("tab", "General");
+  const tabs = ["General", "Scan controls", "Access", "MCP", "Webhooks", "Audit log"];
+  const tab = tabs.includes(requestedTab) ? requestedTab : "General";
+  const [form, setForm] = useState(settings),
     [busy, setBusy] = useState(false);
   return (
     <>
       <div className="tab-line">
-        {["General", "Scan controls", "Access", "Webhooks", "Audit log"].map(
+        {tabs.map(
           (t) => (
             <button
               key={t}
               className={tab === t ? "tab-active" : ""}
+              aria-current={tab === t ? "page" : undefined}
               onClick={() => setTab(t)}
             >
               {t}
@@ -3189,6 +3254,8 @@ function SettingsPage({
       </div>
       {tab === "Access" ? (
         <AccessPanel state={access} />
+      ) : tab === "MCP" ? (
+        <MCPPanel onOpenAccess={() => setTab("Access")} />
       ) : tab === "Webhooks" ? (
         <WebhooksPanel webhooks={access.webhooks || []} mutate={mutate} />
       ) : tab === "Audit log" ? (

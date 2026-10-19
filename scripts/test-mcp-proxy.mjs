@@ -34,6 +34,39 @@ test("MCP proxy validates Origin even for reads", async () => {
 test("MCP proxy bounds bodies before forwarding", async () => {
   const response = await route.POST(request("POST", { authorization: `Bearer ${key}` }, " ".repeat(32769)));
   assert.equal(response.status, 413);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
+test("MCP proxy handles interrupted uploads without forwarding partial requests", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded = false;
+  const body = new ReadableStream({
+    start(controller) { controller.error(new Error("fixture interrupted upload")); },
+  });
+  try {
+    globalThis.fetch = async () => { forwarded = true; throw new Error("must not forward"); };
+    const value = request("POST", { authorization: `Bearer ${key}` });
+    Object.defineProperty(value, "body", { value: body });
+    const response = await route.POST(value);
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(forwarded, false);
+    assert.equal(body.locked, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MCP proxy rejects oversized uploads even if stream cancellation fails", async () => {
+  const body = new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(32769)); },
+    cancel() { throw new Error("fixture failed cancellation"); },
+  });
+  const value = request("POST", { authorization: `Bearer ${key}` });
+  Object.defineProperty(value, "body", { value: body });
+  const response = await route.POST(value);
+  assert.equal(response.status, 413);
+  assert.equal(body.locked, false);
 });
 
 test("MCP proxy preserves protocol headers, caller identity, body, and upstream errors", async () => {

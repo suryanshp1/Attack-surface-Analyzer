@@ -168,6 +168,56 @@
             "description": "Created"
           }
         }
+      },
+      "delete": {
+        "summary": "Delete selected scans records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution. Only finished scans may be deleted. Active leases, observations, checkpoints and scheduling history are retained internally.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          },
+          "409": {
+            "description": "Batch contains an active scan; no records changed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ids"
+                ],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/scans/{id}/cancel": {
@@ -225,6 +275,38 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Delete selected findings records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,128}$"
             }
           }
         ]
@@ -628,6 +710,422 @@
           },
           "404": {
             "description": "Takeover not found"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete selected takeovers records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+            }
+          }
+        ]
+      }
+    },
+    "/findings": {
+      "delete": {
+        "summary": "Delete selected findings records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ids"
+                ],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets": {
+      "delete": {
+        "summary": "Delete selected assets records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution. Nested endpoints leave active inventory with the asset; findings and scan history remain.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ids"
+                ],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets/{id}": {
+      "delete": {
+        "summary": "Delete selected assets records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution. Nested endpoints leave active inventory with the asset; findings and scan history remain.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+            }
+          }
+        ]
+      }
+    },
+    "/endpoints": {
+      "delete": {
+        "summary": "Delete selected endpoints records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ids"
+                ],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/endpoints/{id}": {
+      "delete": {
+        "summary": "Delete selected endpoints records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+            }
+          }
+        ]
+      }
+    },
+    "/scans/{id}": {
+      "delete": {
+        "summary": "Delete selected scans records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution. Only finished scans may be deleted. Active leases, observations, checkpoints and scheduling history are retained internally.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          },
+          "409": {
+            "description": "Batch contains an active scan; no records changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+            }
+          }
+        ]
+      }
+    },
+    "/hazards": {
+      "delete": {
+        "summary": "Delete selected hazards records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ids"
+                ],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/hazards/{id}": {
+      "delete": {
+        "summary": "Delete selected hazards records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+            }
+          }
+        ]
+      }
+    },
+    "/takeovers": {
+      "delete": {
+        "summary": "Delete selected takeovers records",
+        "description": "Minimum role: owner. Removes records from active views, reports, metrics and MCP; retains internal history and append-only audit records. Each request is atomic and accepts 1\u2013100 unique existing IDs. Already deleted IDs are safe to retry. Client bulk operations use multiple requests and may partially complete. Fresh observations in a later scan may make deleted observations visible again. This is not a storage/evidence purge or finding resolution.",
+        "responses": {
+          "200": {
+            "description": "Deleted count; retrying an already deleted ID returns zero"
+          },
+          "400": {
+            "description": "Invalid, duplicate, missing or unknown IDs; no records changed"
+          },
+          "401": {
+            "description": "Missing, expired, disabled or revoked credentials"
+          },
+          "403": {
+            "description": "Only workspace owners may delete records"
+          },
+          "500": {
+            "description": "Persistence failure; deletion and audit changes rolled back"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ids"
+                ],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

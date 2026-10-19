@@ -151,16 +151,29 @@ func (s *Server) mcpList(ctx context.Context, req *mcp.CallToolRequest, kind str
 	switch kind {
 	case "targets":
 		for _, v := range s.state.Targets {
-			appendItem(v.ID, v.Status, "", func() any { v.Token = ""; v.CanScan = s.targetCanScan(&v); return v })
+			appendItem(v.ID, v.Status, "", func() any {
+				v.Token = ""
+				v.CanScan = s.targetCanScan(&v)
+				v.Assets = 0
+				for _, a := range s.state.Assets {
+					if a.TargetID == v.ID && !a.Removed && !s.recordDeleted("assets", a.ID) {
+						v.Assets++
+					}
+				}
+				return v
+			})
 		}
 	case "assets":
 		for _, v := range s.state.Assets {
-			if !v.Removed {
-				appendItem(v.TargetID, "", v.Severity, func() any { return publicAsset(v) })
+			if !v.Removed && !s.recordDeleted("assets", v.ID) {
+				appendItem(v.TargetID, "", v.Severity, func() any { return s.visibleAsset(v) })
 			}
 		}
 	case "findings":
 		for _, v := range s.state.Findings {
+			if v.DeletedAt != "" {
+				continue
+			}
 			appendItem(v.TargetID, v.Status, v.Severity, func() any {
 				v.EvidenceKey = ""
 				v.Evidence = redact(capString(v.Evidence, 16<<10))
@@ -170,18 +183,27 @@ func (s *Server) mcpList(ctx context.Context, req *mcp.CallToolRequest, kind str
 		}
 	case "endpoints":
 		for _, asset := range s.state.Assets {
-			if asset.Removed {
+			if asset.Removed || s.recordDeleted("assets", asset.ID) {
 				continue
 			}
 			for _, endpoint := range asset.Endpoints {
+				if s.recordDeleted("endpoints", endpoint.ID) {
+					continue
+				}
 				appendItem(asset.TargetID, "", "", func() any { endpoint.TargetID = asset.TargetID; return endpoint })
 			}
 		}
 		for _, v := range s.state.History {
+			if s.recordDeleted("endpoints", v.ID) {
+				continue
+			}
 			appendItem(v.TargetID, "", "", func() any { v.Historical = true; return v })
 		}
 	case "scans":
 		for _, v := range s.state.Scans {
+			if s.recordDeleted("scans", v.ID) {
+				continue
+			}
 			appendItem(v.TargetID, v.Status, "", func() any { return publicScan(v) })
 		}
 	default:

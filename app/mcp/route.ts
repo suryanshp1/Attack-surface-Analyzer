@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 async function proxy(request: NextRequest) {
   const origin = request.headers.get("origin");
   if (origin && origin !== request.nextUrl.origin) {
-    return Response.json({ error: "Cross-origin requests are not allowed" }, { status: 403 });
+    return Response.json({ error: "Cross-origin requests are not allowed" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   }
   const authorization = request.headers.get("authorization") ?? "";
   if (!/^Bearer surf_key_[a-f0-9]{64}$/.test(authorization)) {
@@ -26,17 +26,24 @@ async function proxy(request: NextRequest) {
     const reader = request.body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += chunk.value.byteLength;
-      if (size > 32768) {
-        await reader.cancel();
-        return Response.json({ error: "Request exceeds 32 KB" }, { status: 413 });
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > 32768) {
+          // A failed cancellation must not turn an oversized body into a 500.
+          await reader.cancel().catch(() => undefined);
+          return Response.json({ error: "Request exceeds 32 KB" }, { status: 413, headers: { "Cache-Control": "no-store" } });
+        }
+        chunks.push(chunk.value);
       }
-      chunks.push(chunk.value);
+      body = Buffer.concat(chunks);
+    } catch {
+      return Response.json({ error: "Unable to read MCP request body" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+    } finally {
+      reader.releaseLock();
     }
-    body = Buffer.concat(chunks);
   }
   try {
     const response = await fetch(`${process.env.API_URL ?? "http://127.0.0.1:8080"}/api/mcp`, {
@@ -53,7 +60,7 @@ async function proxy(request: NextRequest) {
     }
     return new Response(response.body, { status: response.status, headers: returned });
   } catch {
-    return Response.json({ error: "The Surfacer API is unavailable" }, { status: 503 });
+    return Response.json({ error: "The Surfacer API is unavailable" }, { status: 503, headers: { "Cache-Control": "no-store" } });
   }
 }
 

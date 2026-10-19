@@ -90,7 +90,7 @@ func (s *Server) mcpGetScan(ctx context.Context, req *mcp.CallToolRequest, scanI
 		return nil, fmt.Errorf("access key expired, revoked, or disabled")
 	}
 	for _, scan := range s.state.Scans {
-		if scan.ID != scanID {
+		if scan.ID != scanID || s.recordDeleted("scans", scan.ID) {
 			continue
 		}
 		raw, err := json.Marshal(publicScan(scan))
