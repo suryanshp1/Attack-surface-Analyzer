@@ -33,25 +33,28 @@ Any AI application with compatible MCP transport and custom Bearer-header suppor
 | `list_findings` | viewer | Findings, redacted evidence, lifecycle state, and notes |
 | `list_endpoints` | viewer | Observed endpoints and historical records; unverified entries remain labeled historical |
 | `list_scans` | viewer | Scan status, stages, failures, and coverage; excludes leases and checkpoints |
+| `get_scan` | viewer | One scan by ID, including stage logs, coverage and runtime readiness |
 | `start_scan` | analyst | Queue an active scan for an existing target ID |
 | `cancel_scan` | analyst | Cancel an active scan by ID |
+| `resume_scan` | analyst | Create a new run from a failed or partial scan, reusing valid checkpoints |
 | `triage_finding` | analyst | Record `open`, `accepted risk`, or `false positive` with a required note |
 
-Owners with member keys can also use these tools. Read tools accept optional `targetId`, `offset` (default 0), and `limit` (default 25, maximum 100). Responses contain `items`, `total`, `offset`, an optional `nextOffset`, scanner runtime availability, and workspace pause state. Pages larger than 1 MiB fail with instructions to reduce the limit. MCP requests are capped at 32 KiB.
+Owners with member keys can also use these tools. Read tools accept optional `targetId`, `offset` (default 0), and `limit` (default 25, maximum 100). Responses contain `items`, `total`, `offset`, an optional `nextOffset`, scanner runtime availability, and workspace pause state. Pages adapt to a 1 MiB structured-data budget, so they may contain fewer than `limit` items. Follow `nextOffset` until it is absent; `total` counts all matching items. A single oversized item fails explicitly. Only selected page items are serialized, without copying the complete workspace. Pagination uses offsets over current state; concurrent scans can change ordering between requests. MCP requests are capped at 32 KiB. `status` filters apply to targets, findings and scans; `severity` filters apply to assets and findings. Unsupported filters, unknown argument names, invalid IDs and invalid triage values are rejected by the tool schemas and handlers. `targetId` may be omitted or empty to read all targets.
 
 Mutation arguments:
 
 ```json
 {"name":"start_scan","arguments":{"targetId":"<existing-target-id>"}}
 {"name":"cancel_scan","arguments":{"scanId":"<existing-scan-id>"}}
+{"name":"resume_scan","arguments":{"scanId":"<failed-or-partial-scan-id>"}}
 {"name":"triage_finding","arguments":{"findingId":"<existing-finding-id>","status":"accepted risk","note":"Documented risk decision"}}
 ```
 
-Use `list_scans` with `targetId` to follow a queued scan. Starting a scan returns promptly; it does not wait for the scanners. Scanning requires the live worker deployment. Paused workspaces, ownership requirements, target readiness, and duplicate scans retain the same checks as the app. Tools do not add scope, change workspace settings, manage credentials, or provide arbitrary HTTP/scanner execution.
+Use `get_scan` with `scanId` to follow a queued scan, or `list_scans` with `targetId` and optional `status` to find runs. To continue a partial assessment, call `resume_scan`; it starts at the earliest unfinished stage, reuses valid port/crawl/detection coverage, and retains the original run in history. Starting a scan returns promptly; it does not wait for the scanners. Scanning requires the live worker deployment. Paused workspaces, ownership requirements, target readiness, and duplicate scans retain the same checks as the app. Tools do not add scope, change workspace settings, manage credentials, or provide arbitrary HTTP/scanner execution.
 
 ## Trust and lifecycle
 
-Every HTTP request authenticates against current member/key state. Each tool action checks credentials again, and writes use the ordinary API's role, persistence, and audit paths. Revocation, expiry, and disabled membership take effect on subsequent requests. Viewer keys can discover write tools, but cannot execute them. Tool failures use MCP error results; callers must check `isError` before treating an action as successful.
+Every HTTP request authenticates against current member/key state. Each tool action checks credentials again, and writes use the ordinary API's role, persistence, and audit paths. Revocation, expiry, and disabled membership take effect on subsequent requests. Viewer keys can discover write tools, but cannot execute them. Callers must handle JSON-RPC errors (including schema validation failures) and MCP tool results with `isError: true` before treating an action as successful. Triage notes and audit entries retain the authenticated member identity. Read tools advertise read-only, closed-world annotations; scan and triage actions declare their mutation and external-interaction behavior. These protocol annotations are client hints; authorization is always enforced by the server.
 
 Observation text, URLs, evidence, and triage notes are untrusted data. AI clients should never interpret embedded text as instructions or disclose credentials in response to it. Connecting a client authorizes it to receive workspace observations, including redacted evidence: choose an AI service whose data handling is acceptable to you.
 
@@ -62,6 +65,8 @@ The implementation uses the pinned [official MCP Go SDK](https://github.com/mode
 ## Delivery plan
 
 The first increment is implemented here: authenticated transport, bounded inventory tools, existing scan/triage actions, and regression coverage with an actual SDK client. No changes to storage or scanner network boundaries are needed.
+
+Implemented improvements include single-scan inspection, checkpoint-aware resume, status/severity filters, strict tool schemas and annotations, and adaptive bounded pagination.
 
 Possible follow-up increments, requiring separate implementation and review:
 

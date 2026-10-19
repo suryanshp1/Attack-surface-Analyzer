@@ -63,22 +63,34 @@ type Asset struct {
 	Blocked      bool       `json:"blocked"`
 }
 type Finding struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	Severity     string `json:"severity"`
-	Host         string `json:"host"`
-	Status       string `json:"status"`
-	Template     string `json:"template"`
-	FirstSeen    string `json:"firstSeen"`
-	LastSeen     string `json:"lastSeen"`
-	Description  string `json:"description"`
-	Remediation  string `json:"remediation"`
-	Evidence     string `json:"evidence"`
-	Notes        []Note `json:"notes"`
-	MatchedAt    string `json:"matchedAt"`
-	TargetID     string `json:"targetId"`
-	EvidenceKey  string `json:"evidenceKey"`
-	MissingScans int    `json:"missingScans"`
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Severity     string   `json:"severity"`
+	Host         string   `json:"host"`
+	Status       string   `json:"status"`
+	Template     string   `json:"template"`
+	FirstSeen    string   `json:"firstSeen"`
+	LastSeen     string   `json:"lastSeen"`
+	Description  string   `json:"description"`
+	Remediation  string   `json:"remediation"`
+	Evidence     string   `json:"evidence"`
+	Notes        []Note   `json:"notes"`
+	MatchedAt    string   `json:"matchedAt"`
+	TargetID     string   `json:"targetId"`
+	EvidenceKey  string   `json:"evidenceKey"`
+	MissingScans int      `json:"missingScans"`
+	Category     string   `json:"category,omitempty"`
+	Port         int      `json:"port,omitempty"`
+	Protocol     string   `json:"protocol,omitempty"`
+	Method       string   `json:"method,omitempty"`
+	Parameters   []string `json:"parameters,omitempty"`
+	StageName    string   `json:"stageName,omitempty"`
+	Tool         string   `json:"tool,omitempty"`
+	Technologies []string `json:"technologies,omitempty"`
+	IP           string   `json:"ip,omitempty"`
+	ScanID       string   `json:"scanId,omitempty"`
+	StepLog      string   `json:"stepLog,omitempty"`
+	StepSuccess  bool     `json:"stepSuccess,omitempty"`
 }
 type Note struct {
 	Text  string `json:"text"`
@@ -86,20 +98,44 @@ type Note struct {
 	Actor string `json:"actor"`
 }
 type Stage struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Tool     string `json:"tool"`
-	Log      string `json:"log"`
-	Attempts int    `json:"attempts"`
+	CoverageStatus string `json:"coverageStatus,omitempty"`
+	Issue          string `json:"issue,omitempty"`
+	StartedAt      string `json:"startedAt,omitempty"`
+	FinishedAt     string `json:"finishedAt,omitempty"`
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	Tool           string `json:"tool"`
+	Log            string `json:"log"`
+	Attempts       int    `json:"attempts"`
+}
+type CheckCoverage struct {
+	Finished  int `json:"finished"`
+	Remaining int `json:"remaining"`
+}
+type ServiceIssue struct {
+	Origin string `json:"origin"`
+	Reason string `json:"reason"`
+}
+type ResumePlan struct {
+	FromStage        string `json:"fromStage"`
+	RetainedStages   int    `json:"retainedStages"`
+	RepeatedStages   int    `json:"repeatedStages"`
+	CheckpointPolicy string `json:"checkpointPolicy"`
 }
 type ScanCoverage struct {
-	CrawlFinished  int `json:"crawlFinished"`
-	CrawlRemaining int `json:"crawlRemaining"`
-	PortFinished   int `json:"portFinished"`
-	PortRemaining  int `json:"portRemaining"`
+	HTTP              *CheckCoverage `json:"http,omitempty"`
+	Detection         *CheckCoverage `json:"detection,omitempty"`
+	ServiceIssues     []ServiceIssue `json:"serviceIssues,omitempty"`
+	ServiceIssueCount int            `json:"serviceIssueCount"`
+	CrawlFinished     int            `json:"crawlFinished"`
+	CrawlRemaining    int            `json:"crawlRemaining"`
+	PortFinished      int            `json:"portFinished"`
+	PortRemaining     int            `json:"portRemaining"`
 }
 type Scan struct {
-	Coverage ScanCoverage `json:"coverage"`
+	ParentScanID string       `json:"parentScanId,omitempty"`
+	Resume       *ResumePlan  `json:"resume,omitempty"`
+	Coverage     ScanCoverage `json:"coverage"`
 
 	ExcludedHosts []string          `json:"excludedHosts,omitempty"`
 	ID            string            `json:"id"`
@@ -141,20 +177,73 @@ type Settings struct {
 	Retention   int    `json:"retention"`
 	Paused      bool   `json:"paused"`
 }
+type MXRecord struct {
+	Host string   `json:"host"`
+	Pref int      `json:"pref"`
+	IPs  []string `json:"ips,omitempty"`
+}
+type DomainDNSPosture struct {
+	ID           string     `json:"id"`
+	ScanID       string     `json:"scanId"`
+	Domain       string     `json:"domain"`
+	SPFRecord    string     `json:"spfRecord"`
+	SPFStatus    string     `json:"spfStatus"` // 'secure', 'softfail', 'permissive', 'missing'
+	DMARCRecord  string     `json:"dmarcRecord"`
+	DMARCPolicy  string     `json:"dmarcPolicy"` // 'reject', 'quarantine', 'none', 'missing'
+	DKIMDetected bool       `json:"dkimDetected"`
+	MXRecords    []MXRecord `json:"mxRecords"`
+	CreatedAt    string     `json:"createdAt"`
+}
+type SubdomainTakeover struct {
+	ID              string `json:"id"`
+	ScanID          string `json:"scanId"`
+	Subdomain       string `json:"subdomain"`
+	CNAME           string `json:"cname"`
+	ServiceProvider string `json:"serviceProvider"`
+	Status          string `json:"status"` // 'open', 'resolved', 'suppressed'
+	FirstSeen       string `json:"firstSeen"`
+	LastSeen        string `json:"lastSeen"`
+	ReopenCount     int    `json:"reopenCount"`
+	MissingScans    int    `json:"missingScans"`
+}
+type EndpointHazard struct {
+	ID          string `json:"id"`
+	ScanID      string `json:"scanId"`
+	URL         string `json:"url"`
+	Parameter   string `json:"parameter"`
+	HazardClass string `json:"hazardClass"` // 'ssrf_candidate', 'redirect_candidate', 'lfi_candidate', 'sqli_candidate', 'debug_flag', 'sensitive_file'
+	Severity    string `json:"severity"`    // 'critical', 'high', 'medium', 'low'
+	CreatedAt   string `json:"createdAt"`
+}
+type NotificationWebhook struct {
+	ID                   string `json:"id"`
+	URL                  string `json:"url"`
+	WebhookType          string `json:"webhookType"` // 'slack', 'discord', 'generic'
+	Enabled              bool   `json:"enabled"`
+	NotifyOnNewAssets    bool   `json:"notifyOnNewAssets"`
+	NotifyOnNewPorts     bool   `json:"notifyOnNewPorts"`
+	NotifyOnHighFindings bool   `json:"notifyOnHighFindings"`
+	NotifyOnTakeovers    bool   `json:"notifyOnTakeovers"`
+	CreatedAt            string `json:"createdAt"`
+}
 type State struct {
-	Members    []Member    `json:"members"`
-	AccessKeys []AccessKey `json:"accessKeys"`
-	Me         Actor       `json:"me"`
-	History    []Endpoint  `json:"history"`
-	Targets    []Target    `json:"targets"`
-	Assets     []Asset     `json:"assets"`
-	Findings   []Finding   `json:"findings"`
-	Scans      []Scan      `json:"scans"`
-	Events     []Event     `json:"events"`
-	Audit      []Event     `json:"audit"`
-	Settings   Settings    `json:"settings"`
-	Demo       bool        `json:"demo,omitempty"`
-	Runtime    RuntimeInfo `json:"runtime"`
+	Members    []Member              `json:"members"`
+	AccessKeys []AccessKey           `json:"accessKeys"`
+	Me         Actor                 `json:"me"`
+	History    []Endpoint            `json:"history"`
+	Targets    []Target              `json:"targets"`
+	Assets     []Asset               `json:"assets"`
+	Findings   []Finding             `json:"findings"`
+	Scans      []Scan                `json:"scans"`
+	Events     []Event               `json:"events"`
+	Audit      []Event               `json:"audit"`
+	Settings   Settings              `json:"settings"`
+	Demo       bool                  `json:"demo,omitempty"`
+	Runtime    RuntimeInfo           `json:"runtime"`
+	DNSPosture []DomainDNSPosture    `json:"dnsPosture,omitempty"`
+	Takeovers  []SubdomainTakeover   `json:"takeovers,omitempty"`
+	Hazards    []EndpointHazard      `json:"hazards,omitempty"`
+	Webhooks   []NotificationWebhook `json:"webhooks,omitempty"`
 }
 type Server struct {
 	mu              sync.Mutex
@@ -172,6 +261,21 @@ type Server struct {
 	requestActor    string
 	mcpOnce         sync.Once
 	mcpHandler      http.Handler
+	changeCh        chan struct{}
+}
+
+func (s *Server) changeChannel() chan struct{} {
+	if s.changeCh == nil {
+		s.changeCh = make(chan struct{})
+	}
+	return s.changeCh
+}
+
+func (s *Server) broadcast() {
+	if s.changeCh != nil {
+		close(s.changeCh)
+	}
+	s.changeCh = make(chan struct{})
 }
 
 func id() string {
@@ -194,7 +298,11 @@ func (s *Server) auditActor(action, detail, actor string) {
 }
 func (s *Server) save() error {
 	if s.db != nil {
-		return s.saveRelational()
+		if err := s.saveRelational(); err != nil {
+			return err
+		}
+		s.broadcast()
+		return nil
 	}
 	b, err := json.Marshal(s.state)
 	if err != nil {
@@ -207,7 +315,11 @@ func (s *Server) save() error {
 	if err = os.WriteFile(s.file+".tmp", b, 0600); err != nil {
 		return err
 	}
-	return os.Rename(s.file+".tmp", s.file)
+	if err = os.Rename(s.file+".tmp", s.file); err != nil {
+		return err
+	}
+	s.broadcast()
+	return nil
 }
 func respond(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -611,29 +723,15 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		retry.Worker = ""
 		retry.Attempts = 0
 		retry.RetryAt = ""
-		firstPending := len(retry.Stages)
-		for i, stage := range retry.Stages {
-			if stage.Status != "completed" && i < firstPending {
-				firstPending = i
-			}
-			if stage.Name == "Endpoint crawling" && len(retry.Checkpoint.CrawlIncomplete) > 0 && i < firstPending {
-				firstPending = i
-			}
-			if stage.Name == "Port discovery" && len(retry.Checkpoint.PortIncomplete) > 0 && i < firstPending {
-				firstPending = i
-			}
-		}
-		if firstPending == len(retry.Stages) {
-			// A partial run can have all stages finished but blocked coverage.
-			for i, stage := range retry.Stages {
-				if stage.Name == "HTTP probing" {
-					firstPending = i
-					break
-				}
-			}
-		}
+		firstPending := resumeStage(retry)
+		retry.Progress = firstPending * 100 / max(1, len(retry.Stages))
+		retry.ParentScanID = previousID
+		retry.Resume = nil
 		for i := firstPending; i < len(retry.Stages); i++ {
 			retry.Stages[i].Status = "pending"
+		}
+		if firstPending < len(retry.Stages) && (retry.Stages[firstPending].Name == "Discovery" || retry.Stages[firstPending].Name == "DNS resolution") {
+			retry.Checkpoint = Checkpoint{Known: retry.Checkpoint.Known, KnownSecrets: retry.Checkpoint.KnownSecrets, Hosts: retry.Checkpoint.Hosts, IncompleteStages: retry.Checkpoint.IncompleteStages}
 		}
 		if firstPending < len(retry.Stages) && (retry.Stages[firstPending].Name == "Port discovery" || retry.Stages[firstPending].Name == "HTTP probing") {
 			retry.Checkpoint = resumeNetworkCheckpoint(retry.Checkpoint)
@@ -643,6 +741,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				retry.Stages[i].Status = "pending"
 				retry.Stages[i].Attempts = 0
 				retry.Stages[i].Log = ""
+				retry.Stages[i].StartedAt = ""
+				retry.Stages[i].FinishedAt = ""
+				retry.Stages[i].CoverageStatus = ""
+				retry.Stages[i].Issue = ""
 			}
 		}
 		s.state.Scans = append([]Scan{retry}, s.state.Scans...)
@@ -694,7 +796,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		for i, f := range s.state.Findings {
 			if f.ID == parts[1] {
 				s.state.Findings[i].Status = p.Status
-				s.state.Findings[i].Notes = append(s.state.Findings[i].Notes, Note{p.Note, now(), "Workspace owner"})
+				s.state.Findings[i].Notes = append(s.state.Findings[i].Notes, Note{p.Note, now(), actor.Name})
 				s.audit("Finding triaged", f.Title+": "+p.Status)
 				result = s.state.Findings[i]
 				found = true
@@ -730,6 +832,158 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit("Workspace settings updated", fmt.Sprintf("Rate %d · concurrency %d · paused %t", p.Rate, p.Concurrency, p.Paused))
 		result = p
+		mutated = true
+	case path == "webhooks" && r.Method == "GET":
+		result = s.state.Webhooks
+		if result == nil {
+			result = []NotificationWebhook{}
+		}
+	case path == "webhooks" && r.Method == "POST":
+		var p struct {
+			URL                  string `json:"url"`
+			WebhookType          string `json:"webhookType"`
+			Enabled              *bool  `json:"enabled"`
+			NotifyOnNewAssets    *bool  `json:"notifyOnNewAssets"`
+			NotifyOnNewPorts     *bool  `json:"notifyOnNewPorts"`
+			NotifyOnHighFindings *bool  `json:"notifyOnHighFindings"`
+			NotifyOnTakeovers    *bool  `json:"notifyOnTakeovers"`
+		}
+		if !decode(w, r, &p) {
+			return
+		}
+		u, err := url.Parse(p.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			fail(w, 400, "Enter a valid HTTP or HTTPS webhook URL.")
+			return
+		}
+		whType := strings.ToLower(strings.TrimSpace(p.WebhookType))
+		if whType != "slack" && whType != "discord" && whType != "generic" {
+			whType = "generic"
+		}
+		enabled := true
+		if p.Enabled != nil {
+			enabled = *p.Enabled
+		}
+		newAssets := true
+		if p.NotifyOnNewAssets != nil {
+			newAssets = *p.NotifyOnNewAssets
+		}
+		newPorts := true
+		if p.NotifyOnNewPorts != nil {
+			newPorts = *p.NotifyOnNewPorts
+		}
+		highFindings := true
+		if p.NotifyOnHighFindings != nil {
+			highFindings = *p.NotifyOnHighFindings
+		}
+		takeovers := true
+		if p.NotifyOnTakeovers != nil {
+			takeovers = *p.NotifyOnTakeovers
+		}
+		wh := NotificationWebhook{
+			ID:                   id(),
+			URL:                  p.URL,
+			WebhookType:          whType,
+			Enabled:              enabled,
+			NotifyOnNewAssets:    newAssets,
+			NotifyOnNewPorts:     newPorts,
+			NotifyOnHighFindings: highFindings,
+			NotifyOnTakeovers:    takeovers,
+			CreatedAt:            now(),
+		}
+		s.state.Webhooks = append([]NotificationWebhook{wh}, s.state.Webhooks...)
+		s.audit("Webhook created", wh.WebhookType+" · "+wh.URL)
+		result = wh
+		status = 201
+		mutated = true
+	case path == "webhooks" && r.Method == "DELETE":
+		whID := r.URL.Query().Get("id")
+		if whID == "" {
+			fail(w, 400, "Webhook id is required")
+			return
+		}
+		found := false
+		var remaining []NotificationWebhook
+		for _, wh := range s.state.Webhooks {
+			if wh.ID == whID {
+				found = true
+			} else {
+				remaining = append(remaining, wh)
+			}
+		}
+		if !found {
+			fail(w, 404, "Webhook not found")
+			return
+		}
+		s.state.Webhooks = remaining
+		s.audit("Webhook deleted", whID)
+		result = map[string]bool{"ok": true}
+		mutated = true
+	case path == "webhooks/test" && r.Method == "POST":
+		var p struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		}
+		_ = decode(w, r, &p)
+		var targetWH NotificationWebhook
+		if p.ID != "" {
+			for _, wh := range s.state.Webhooks {
+				if wh.ID == p.ID {
+					targetWH = wh
+					break
+				}
+			}
+		}
+		if targetWH.ID == "" && p.URL != "" {
+			targetWH = NotificationWebhook{
+				ID:          "test",
+				URL:         p.URL,
+				WebhookType: "generic",
+				Enabled:     true,
+			}
+		}
+		if targetWH.URL == "" {
+			fail(w, 400, "Specify an existing webhook id or url to test")
+			return
+		}
+		testPayload := WebhookPayload{
+			Event:     "test",
+			Title:     "Surfacer Webhook Test",
+			Detail:    "This is a test notification from Surfacer Attack Surface Management.",
+			Timestamp: now(),
+		}
+		dispatchCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if err := DispatchWebhook(dispatchCtx, nil, targetWH, testPayload); err != nil {
+			fail(w, 502, "Webhook delivery failed: "+err.Error())
+			return
+		}
+		result = map[string]string{"status": "delivered"}
+	case len(parts) == 2 && parts[0] == "takeovers" && r.Method == "PATCH":
+		var p struct {
+			Status string `json:"status"`
+		}
+		if !decode(w, r, &p) {
+			return
+		}
+		if p.Status != "open" && p.Status != "suppressed" && p.Status != "resolved" {
+			fail(w, 400, "Status must be open, suppressed, or resolved")
+			return
+		}
+		found := false
+		for i, to := range s.state.Takeovers {
+			if to.ID == parts[1] {
+				s.state.Takeovers[i].Status = p.Status
+				s.audit("Subdomain takeover status updated", to.Subdomain+": "+p.Status)
+				result = s.state.Takeovers[i]
+				found = true
+				break
+			}
+		}
+		if !found {
+			fail(w, 404, "Subdomain takeover not found")
+			return
+		}
 		mutated = true
 	default:
 		fail(w, 404, "Endpoint not found")
@@ -828,6 +1082,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		b, _ := json.Marshal(s.publicStateFor(actor))
+		ch := s.changeChannel()
 		s.mu.Unlock()
 		if !bytes.Equal(previous, b) {
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
@@ -843,11 +1098,16 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			lastSent = time.Now()
 			f.Flush()
 		}
+		var serverCtxDone <-chan struct{}
+		if s.ctx != nil {
+			serverCtxDone = s.ctx.Done()
+		}
 		select {
 		case <-r.Context().Done():
 			return
-		case <-s.ctx.Done():
+		case <-serverCtxDone:
 			return
+		case <-ch:
 		case <-ticker.C:
 		}
 	}

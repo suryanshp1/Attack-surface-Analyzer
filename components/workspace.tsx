@@ -29,11 +29,13 @@ import {
   ExternalLink,
   FileText,
   Fingerprint,
+  Flame,
   Globe2,
   LayoutDashboard,
   ListFilter,
   Loader2,
   LockKeyhole,
+  Mail,
   Menu,
   MoreHorizontal,
   Network,
@@ -50,6 +52,10 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import {
+  createWorkspaceSync,
+  type ConnectionState,
+} from "@/lib/workspace-sync";
 import { AppearanceControl } from "@/components/appearance";
 import {
   api,
@@ -75,12 +81,19 @@ import {
   type Page,
 } from "@/lib/workspace-route";
 import type { Endpoint } from "@/lib/types";
+import { TakeoversView } from "@/components/takeovers-view";
+import { GovernanceView } from "@/components/governance-view";
+import { HazardsView } from "@/components/hazards-view";
+import { WebhooksPanel } from "@/components/webhooks-panel";
 
 const navigation = [
   { name: "Overview", icon: LayoutDashboard },
   { name: "Inventory", icon: Network },
   { name: "Endpoints", icon: Code2 },
   { name: "Findings", icon: Shield },
+  { name: "Takeovers", icon: Flame },
+  { name: "Governance", icon: Mail },
+  { name: "Hazards", icon: TriangleAlert },
   { name: "Changes", icon: Activity },
   { name: "Scan activity", icon: Radar },
 ] as const;
@@ -92,6 +105,8 @@ const severityOrder: Record<string, number> = {
   none: 4,
   info: 5,
 };
+const isSecurityIssue = (finding: Finding) =>
+  !finding.category || ["vulnerability", "secret"].includes(finding.category);
 const activeScanStatus = (status: string) =>
   ["running", "queued", "retrying"].includes(status);
 function stageStatus(scan: Scan, status: string) {
@@ -107,7 +122,9 @@ const statusLabel = (status: string) =>
     ? "Not run"
     : status.charAt(0).toUpperCase() + status.slice(1);
 function scanSummary(scan: Scan) {
-  const pendingStages = scan.stages.filter((s) => s.status !== "completed").length;
+  const pendingStages = scan.stages.filter(
+    (s) => s.status !== "completed",
+  ).length;
   const pendingDetection =
     scan.stages.find((s) => s.name === "Detection")?.status !== "completed";
   if (scan.status === "completed")
@@ -116,8 +133,7 @@ function scanSummary(scan: Scan) {
     return "Assessment in progress. Findings and coverage may change.";
   if (scan.status === "canceled")
     return "Scan canceled. Collected observations are retained.";
-  if (scan.error)
-    return scan.error;
+  if (scan.error) return scan.error;
   if (pendingStages === 0)
     return "All scan stages completed. Unresponsive hosts were skipped for HTTP checks; existing findings are retained.";
   return `Assessment incomplete. ${pendingDetection ? "Detection did not finish. " : "Some checks did not complete. "}Existing findings are retained.`;
@@ -174,7 +190,7 @@ function Pagination({
     setPage(String(value));
     requestAnimationFrame(() =>
       document
-        .querySelector(".responsive-table")
+        .querySelector(".responsive-table, .scan-history")
         ?.scrollIntoView({ block: "start" }),
     );
   };
@@ -316,9 +332,11 @@ function Modal({
     function keys(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
       if (e.key === "Tab" && el) {
-        const items = el.querySelectorAll<HTMLElement>(
-          "button:not([disabled]),input,select,textarea,a[href]",
-        );
+        const items = Array.from(
+          el.querySelectorAll<HTMLElement>(
+            "button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],summary",
+          ),
+        ).filter((item) => item.getClientRects().length > 0);
         const first = items[0],
           last = items[items.length - 1];
         if (
@@ -378,7 +396,12 @@ export default function Workspace() {
     [mobile, setMobile] = useState(false),
     [modal, setModal] = useState<"target" | "scan" | "help" | null>(null),
     [notice, setNotice] = useState(false),
-    [auth, setAuth] = useState(false);
+    [auth, setAuth] = useState(false),
+    [connection, setConnection] = useState<ConnectionState>("connecting"),
+    [lastUpdate, setLastUpdate] = useState("");
+  const sync = useRef<ReturnType<typeof createWorkspaceSync<State>> | null>(
+    null,
+  );
   const route = useWorkspaceRoute();
   const { page, scope, query } = route;
   const setQuery = setWorkspaceQuery;
@@ -412,41 +435,35 @@ export default function Workspace() {
   const drawerRef = useRef<HTMLElement>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const refresh = useCallback(async () => {
-    try {
-      const res = await fetch("/api/state");
-      const data = await res.json();
-      if (res.status === 401) {
-        setAuth(true);
-        return;
-      }
-      if (!res.ok) throw new Error(data.error);
-      setState(data);
-      setError("");
-      setAuth(false);
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    await sync.current?.refresh();
   }, []);
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-  useEffect(() => {
-    if (!state) return;
-    const es = new EventSource("/api/events");
-    es.onmessage = (e) => {
-      try {
-        setState(JSON.parse(e.data));
-      } catch {}
-    };
-    es.onerror = () => {
-      es.close();
-    };
-    const timer = setInterval(() => void refresh(), 8000);
+    const updates = createWorkspaceSync<State>({
+      snapshot(value) {
+        setState(value);
+        setAuth(false);
+        setLastUpdate(new Date().toISOString());
+      },
+      connection: setConnection,
+      error: setError,
+      unauthorized() {
+        setAuth(true);
+      },
+      fetchState: (signal) =>
+        fetch("/api/state", { signal, cache: "no-store" }),
+      openStream: () => new EventSource("/api/events"),
+      visible: () => document.visibilityState !== "hidden",
+    });
+    sync.current = updates;
+    const visibility = () => updates.visibilityChanged();
+    document.addEventListener("visibilitychange", visibility);
+    void updates.refresh();
     return () => {
-      es.close();
-      clearInterval(timer);
+      updates.stop();
+      sync.current = null;
+      document.removeEventListener("visibilitychange", visibility);
     };
-  }, [!!state, refresh]);
+  }, []);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(""), 4500);
@@ -550,12 +567,38 @@ export default function Workspace() {
     message = "Changes saved",
   ) => {
     try {
+      if (path.includes("/cancel") && method === "POST") {
+        const match = path.match(/scans\/([^/]+)\/cancel/);
+        if (match) {
+          const scanId = match[1];
+          setState((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              scans: prev.scans.map((s) =>
+                s.id === scanId
+                  ? {
+                      ...s,
+                      status: "canceled",
+                      stages: s.stages.map((st) =>
+                        st.status === "running" || st.status === "pending"
+                          ? { ...st, status: "canceled" }
+                          : st,
+                      ),
+                    }
+                  : s,
+              ),
+            };
+          });
+        }
+      }
       await api(path, method, data);
       await refresh();
       setToast(message);
       return true;
     } catch (e) {
       setToast((e as Error).message);
+      await refresh();
       return false;
     }
   };
@@ -597,7 +640,9 @@ export default function Workspace() {
   );
   const openFindings = scopedFindings.filter((f) => f.status === "open");
   const openCritical = openFindings.filter(
-    (f) => f.severity === "critical" || f.severity === "high",
+    (f) =>
+      isSecurityIssue(f) &&
+      (f.severity === "critical" || f.severity === "high"),
   ).length;
   const scopedEvents = state.events.filter(
     (e) =>
@@ -828,6 +873,11 @@ export default function Workspace() {
                 : "Applies to this view and its exports"}
             </span>
           </div>
+          <ConnectionStatus
+            connection={connection}
+            lastUpdate={lastUpdate}
+            refresh={refresh}
+          />
           <div className="page-heading">
             <div>
               <h1>
@@ -839,13 +889,19 @@ export default function Workspace() {
                       ? "Your application surface."
                       : page === "Findings"
                         ? "Focus on what matters."
-                        : page === "Changes"
-                          ? "Know what changed."
-                          : page === "Scan activity"
-                            ? "Scan activity."
-                            : page === "Targets"
-                              ? "Your target scope."
-                              : "Workspace settings."}
+                        : page === "Takeovers"
+                          ? "Subdomain takeovers."
+                          : page === "Governance"
+                            ? "DNS & email hygiene."
+                            : page === "Hazards"
+                              ? "Endpoint parameter hazards."
+                              : page === "Changes"
+                                ? "Know what changed."
+                                : page === "Scan activity"
+                                  ? "Scan activity."
+                                  : page === "Targets"
+                                    ? "Your target scope."
+                                    : "Workspace settings."}
               </h1>
               <p>
                 {page === "Overview"
@@ -856,13 +912,19 @@ export default function Workspace() {
                       ? "Pages, APIs, forms and JavaScript discovered by Katana."
                       : page === "Findings"
                         ? "Prioritize exposures, review the evidence, and track the fix."
-                        : page === "Changes"
-                          ? "The latest additions, exposures, and improvements across your surface."
-                          : page === "Scan activity"
-                            ? "Follow every stage. Stay in control of every scan."
-                            : page === "Targets"
-                              ? "Choose a domain. Keep its public services in view."
-                              : "A safe, predictable workspace that works the way you do."}
+                        : page === "Takeovers"
+                          ? "Dangling CNAMEs pointing to orphaned cloud resources with known takeover signatures."
+                          : page === "Governance"
+                            ? "Domain authentication hygiene, SPF policy, DMARC alignment, DKIM selectors, and MX configurations."
+                            : page === "Hazards"
+                              ? "Heuristic threat triage on crawled URLs and parameters without active exploitation."
+                              : page === "Changes"
+                                ? "The latest additions, exposures, and improvements across your surface."
+                                : page === "Scan activity"
+                                  ? "Follow every stage. Stay in control of every scan."
+                                  : page === "Targets"
+                                    ? "Choose a domain. Keep its public services in view."
+                                    : "A safe, predictable workspace that works the way you do."}
               </p>
             </div>
             <div className="page-actions">
@@ -963,6 +1025,7 @@ export default function Workspace() {
                       ...route.filters,
                       severity,
                       findingStatus: "open",
+                      findingCategory: "security",
                       p: "1",
                     },
                   },
@@ -1013,6 +1076,25 @@ export default function Workspace() {
               scopeName={state.targets.find((t) => t.id === scope)?.domain}
             />
           )}
+          {page === "Takeovers" && (
+            <TakeoversView
+              takeovers={state.takeovers || []}
+              scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
+              mutate={mutate}
+            />
+          )}
+          {page === "Governance" && (
+            <GovernanceView
+              dnsPosture={state.dnsPosture || []}
+              scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
+            />
+          )}
+          {page === "Hazards" && (
+            <HazardsView
+              hazards={state.hazards || []}
+              scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
+            />
+          )}
           {page === "Changes" && <Changes events={scopedEvents} />}
           {page === "Targets" && (
             <Targets
@@ -1032,7 +1114,6 @@ export default function Workspace() {
               )}
               select={setScan}
               run={() => setModal("scan")}
-              mutate={mutate}
             />
           )}
           {page === "Settings" && (
@@ -1087,6 +1168,7 @@ export default function Workspace() {
         <RunScan
           verificationRequired={state.runtime?.verificationRequired !== false}
           targets={state.targets}
+          state={state}
           onClose={closeModal}
           onRun={async (id) => {
             if (
@@ -1124,8 +1206,8 @@ export default function Workspace() {
             </p>
             <h3>Your evidence stays yours</h3>
             <p>
-              Evidence is shown as inert text. Secrets are redacted, and
-              optional AI triage is off. Review the local README for deployment
+              Evidence is shown as inert text. Secrets are redacted, and no data
+              is sent to third parties. Review the local README for deployment
               and scope details.
             </p>
             <Button
@@ -1153,6 +1235,9 @@ export default function Workspace() {
       {liveFinding && (
         <FindingDetail
           finding={liveFinding}
+          associatedAsset={state.assets.find(
+            (a) => a.host === liveFinding.host,
+          )}
           onClose={closeFinding}
           mutate={mutate}
         />
@@ -1167,7 +1252,12 @@ export default function Workspace() {
         />
       )}
       {liveScan && (
-        <ScanDetail scan={liveScan} onClose={closeScan} mutate={mutate} />
+        <ScanDetail
+          scan={liveScan}
+          onClose={closeScan}
+          mutate={mutate}
+          canManage={state.me?.role !== "viewer"}
+        />
       )}
     </div>
   );
@@ -1200,8 +1290,15 @@ function Overview({
   filterFindings: (severity: string) => void;
   run: () => void;
 }) {
-  const open = findings.filter((f) => f.status === "open");
-  const resolved = findings.filter((f) => f.status === "resolved").length;
+  const open = findings.filter(
+    (f) => f.status === "open" && isSecurityIssue(f),
+  );
+  const observations = findings.filter(
+    (f) => f.status === "open" && !isSecurityIssue(f),
+  ).length;
+  const resolved = findings.filter(
+    (f) => f.status === "resolved" && isSecurityIssue(f),
+  ).length;
   const selectedTargets = state.targets.filter(
     (t) => scope === "all" || t.id === scope,
   );
@@ -1267,9 +1364,9 @@ function Overview({
             Across {scope === "all" ? ready : 1} scan-ready domains
           </div>
         </button>
-        <button className="stat" onClick={() => go("Findings")}>
+        <button className="stat" onClick={() => filterFindings("all")}>
           <div className="stat-label">
-            Open findings <Shield size={17} />
+            Open security issues <Shield size={17} />
           </div>
           <div className="stat-value">
             {open.length}
@@ -1279,7 +1376,8 @@ function Overview({
             </span>
           </div>
           <div className="stat-caption">
-            {openCritical} high or critical observed
+            {openCritical} high or critical · {observations} inventory
+            observations
           </div>
         </button>
         <button className="stat" onClick={() => go("Changes")}>
@@ -1305,10 +1403,10 @@ function Overview({
             Ready to start a scan <Radar size={17} />
           </div>
           <div className="stat-value">
-            {selectedTargets.length
-              ? Math.round((ready / selectedTargets.length) * 100)
-              : 0}
-            <span className="stat-percent">%</span>
+            {ready}
+            <span className="stat-percent">
+              {ready === 1 ? "target" : "targets"}
+            </span>
             <span className="coverage-dots">
               {selectedTargets.map((t) => (
                 <i key={t.id} className={t.canScan ? "covered" : ""} />
@@ -1344,10 +1442,9 @@ function Overview({
           </h2>
           <p>
             {assessmentProblem
-              ? (assessmentProblem.error || scanSummary(assessmentProblem)).replace(
-                  "Assessment incomplete. ",
-                  "",
-                )
+              ? (
+                  assessmentProblem.error || scanSummary(assessmentProblem)
+                ).replace("Assessment incomplete. ", "")
               : unassessed > 0
                 ? `${unassessed} ${unassessed === 1 ? "target has" : "targets have"} no scan observations yet.`
                 : !latest
@@ -2203,14 +2300,84 @@ function Findings({
 }) {
   const [status, setStatus] = useWorkspaceFilter("findingStatus", "open"),
     [severity, setSeverity] = useWorkspaceFilter("severity", "all");
+  const [category, setCategory] = useWorkspaceFilter(
+    "findingCategory",
+    "security",
+  );
   const [sort, setSort] = useWorkspaceFilter("findingSort", "priority"),
     [group, setGroup] = useWorkspaceFilter("findingGroup", "none");
+
+  const categories = [
+    {
+      id: "security",
+      label: "Security issues",
+      count: findings.filter(isSecurityIssue).length,
+    },
+    { id: "all", label: "All discoveries", count: findings.length },
+    {
+      id: "vulnerability",
+      label: "Vulnerabilities",
+      count: findings.filter(
+        (f) => !f.category || f.category === "vulnerability",
+      ).length,
+    },
+    {
+      id: "port",
+      label: "Open Ports & Services",
+      count: findings.filter((f) => f.category === "port").length,
+    },
+    {
+      id: "endpoint",
+      label: "Endpoints & Routes",
+      count: findings.filter((f) => f.category === "endpoint").length,
+    },
+    {
+      id: "hazard",
+      label: "Parameter Hazards",
+      count: findings.filter((f) => f.category === "hazard").length,
+    },
+    {
+      id: "secret",
+      label: "Exposed Secrets",
+      count: findings.filter((f) => f.category === "secret").length,
+    },
+    {
+      id: "host",
+      label: "Discovered Hosts",
+      count: findings.filter((f) => f.category === "host").length,
+    },
+  ];
+
   const rows = findings
     .filter(
       (f) =>
         (status === "all" || f.status === status) &&
         (severity === "all" || f.severity === severity) &&
-        (f.title + " " + f.host + " " + f.template)
+        (category === "all" ||
+          (category === "security"
+            ? isSecurityIssue(f)
+            : category === "vulnerability"
+              ? !f.category || f.category === "vulnerability"
+              : f.category === category)) &&
+        (
+          f.title +
+          " " +
+          f.host +
+          " " +
+          f.template +
+          " " +
+          (f.matchedAt || "") +
+          " " +
+          (f.ip || "") +
+          " " +
+          (f.port ? String(f.port) : "") +
+          " " +
+          (f.parameters?.join(" ") || "") +
+          " " +
+          (f.technologies?.join(" ") || "") +
+          " " +
+          (f.stageName || "")
+        )
           .toLowerCase()
           .includes(query.toLowerCase()),
     )
@@ -2233,6 +2400,32 @@ function Findings({
   const visible = rows.slice(start, start + 25);
   return (
     <>
+      <p className="findings-context">
+        {
+          findings.filter((f) => f.status === "open" && isSecurityIssue(f))
+            .length
+        }{" "}
+        open security issues ·{" "}
+        {
+          findings.filter((f) => f.status === "open" && !isSecurityIssue(f))
+            .length
+        }{" "}
+        inventory observations. Parameter hazards are candidates, not confirmed
+        vulnerabilities.
+      </p>
+      <div className="tab-line finding-category-tabs">
+        {categories.map((c) => (
+          <button
+            key={c.id}
+            aria-pressed={category === c.id}
+            onClick={() => setCategory(c.id)}
+            className={category === c.id ? "tab-active" : ""}
+          >
+            {c.label}
+            <span>{c.count}</span>
+          </button>
+        ))}
+      </div>
       <div className="tab-line finding-tabs">
         {["open", "accepted risk", "false positive", "resolved", "all"].map(
           (s) => (
@@ -2256,7 +2449,7 @@ function Findings({
         <SearchField
           value={query}
           onChange={setQuery}
-          placeholder="Search findings or hosts…"
+          placeholder="Search findings, ports, routes, hosts, params, tech…"
         />
         <select
           className="filter-select"
@@ -2265,7 +2458,7 @@ function Findings({
           onChange={(e) => setSeverity(e.target.value)}
         >
           <option value="all">All severities</option>
-          {["critical", "high", "medium", "low"].map((s) => (
+          {["critical", "high", "medium", "low", "info"].map((s) => (
             <option value={s} key={s}>
               {s.charAt(0).toUpperCase() + s.slice(1)}
             </option>
@@ -2295,11 +2488,25 @@ function Findings({
           className="sr-only"
           onClick={() =>
             exportCSV("findings", [
-              ["Title", "Severity", "Host", "Status", "First seen"],
+              [
+                "Title",
+                "Category",
+                "Severity",
+                "Host",
+                "IP",
+                "Port",
+                "Matched At",
+                "Status",
+                "First seen",
+              ],
               ...rows.map((f) => [
                 f.title,
+                f.category || "vulnerability",
                 f.severity,
                 f.host,
+                f.ip || "",
+                f.port || "",
+                f.matchedAt || "",
                 f.status,
                 f.firstSeen,
               ]),
@@ -2313,9 +2520,10 @@ function Findings({
         <table className="data-table responsive-table findings-table">
           <thead>
             <tr>
-              <th>Finding</th>
+              <th>Finding & Discovery</th>
               <th>Severity</th>
-              <th>Asset</th>
+              <th>Target Asset</th>
+              <th>Port / Route</th>
               <th>First seen</th>
               <th>Status</th>
               <th />
@@ -2328,7 +2536,7 @@ function Findings({
                   (index === 0 ||
                     visible[index - 1].template !== f.template) && (
                     <tr className="group-row">
-                      <th colSpan={6}>
+                      <th colSpan={7}>
                         {f.template} ·{" "}
                         {
                           rows.filter((row) => row.template === f.template)
@@ -2348,12 +2556,31 @@ function Findings({
                       }}
                     >
                       <span
-                        className={`finding-icon finding-icon-${f.severity}`}
+                        className={`finding-icon finding-icon-${f.category || f.severity || "info"}`}
                       >
-                        <Shield size={18} />
+                        {f.category === "port" ? (
+                          <Network size={18} />
+                        ) : f.category === "endpoint" ? (
+                          <Globe2 size={18} />
+                        ) : f.category === "hazard" ? (
+                          <TriangleAlert size={18} />
+                        ) : f.category === "secret" ? (
+                          <LockKeyhole size={18} />
+                        ) : f.category === "host" ? (
+                          <TargetIcon size={18} />
+                        ) : (
+                          <Shield size={18} />
+                        )}
                       </span>
                       <span>
-                        <strong>{f.title}</strong>
+                        <span className="finding-title-row">
+                          <strong>{f.title}</strong>
+                          {f.category && f.category !== "vulnerability" && (
+                            <span className="category-tag-pill">
+                              {f.category.toUpperCase()}
+                            </span>
+                          )}
+                        </span>
                         <small>{f.matchedAt || f.host}</small>
                       </span>
                     </button>
@@ -2361,7 +2588,23 @@ function Findings({
                   <td data-label="Severity">
                     <Severity value={f.severity} />
                   </td>
-                  <td data-label="Asset">{f.host}</td>
+                  <td data-label="Target Asset">
+                    <span className="asset-cell-wrap">
+                      <strong>{f.host}</strong>
+                      {f.ip && <small className="ip-chip">{f.ip}</small>}
+                    </span>
+                  </td>
+                  <td data-label="Port / Route">
+                    {f.port ? (
+                      <span className="port-badge">
+                        {f.port}/{f.protocol || "tcp"}
+                      </span>
+                    ) : f.method ? (
+                      <span className="method-badge">{f.method}</span>
+                    ) : (
+                      <span className="muted">{f.stageName || "—"}</span>
+                    )}
+                  </td>
                   <td data-label="First seen" className="muted">
                     {relative(f.firstSeen)}
                   </td>
@@ -2622,6 +2865,67 @@ function Targets({
   );
 }
 
+function useVisibleClock(enabled: boolean) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const update = () => {
+      if (document.visibilityState !== "hidden") tick((value) => value + 1);
+    };
+    const timer = setInterval(update, 15000);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, [enabled]);
+}
+function ConnectionStatus({
+  connection,
+  lastUpdate,
+  refresh,
+}: {
+  connection: ConnectionState;
+  lastUpdate: string;
+  refresh: () => Promise<void>;
+}) {
+  useVisibleClock(true);
+  return (
+    <div className={`connection-status connection-${connection}`} role="status">
+      <span className="connection-dot" />
+      {connection === "live"
+        ? "Live updates connected"
+        : connection === "offline"
+          ? "Updates unavailable · showing saved observations"
+          : "Reconnecting live updates · periodic refresh active"}
+      {lastUpdate && <span>Last received {relative(lastUpdate)}</span>}
+      {connection !== "live" && (
+        <button className="text-action" onClick={() => void refresh()}>
+          Refresh now
+        </button>
+      )}
+    </div>
+  );
+}
+function RunDuration({ start, end }: { start: string; end?: string }) {
+  useVisibleClock(!end);
+  return <>{elapsed(start, end)}</>;
+}
+function elapsed(start: string, end?: string) {
+  if (!start || !Number.isFinite(Date.parse(start)))
+    return "Duration unavailable";
+  const seconds = Math.max(
+    0,
+    Math.floor(
+      ((end ? Date.parse(end) : Date.now()) - Date.parse(start)) / 1000,
+    ),
+  );
+  return seconds < 60
+    ? `${seconds}s`
+    : seconds < 3600
+      ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+      : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
 function ScanControls({ scan, mutate }: { scan: Scan; mutate: Mutation }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -2656,7 +2960,7 @@ function ScanControls({ scan, mutate }: { scan: Scan; mutate: Mutation }) {
         ) : (
           <ArrowRight size={14} />
         )}{" "}
-        {active ? "Cancel scan" : "Resume scan"}
+        {active ? "Cancel scan" : "Continue unfinished checks"}
       </Button>
       {error && (
         <p className="form-error" role="alert">
@@ -2693,7 +2997,33 @@ function ScanCoverage({ scan }: { scan: Scan }) {
           )}
         </>
       )}
-      <span>Stage progress is not a percentage of asset coverage.</span>
+      {coverage?.http ? (
+        <span>
+          {coverage.http.finished}/
+          {coverage.http.finished + coverage.http.remaining} HTTP origins
+          responded without blocking/server errors · {coverage.http.remaining}{" "}
+          unchecked
+        </span>
+      ) : (
+        <span>HTTP coverage counts not recorded for this run</span>
+      )}
+      {coverage?.detection ? (
+        <span>
+          {coverage.detection.finished}/
+          {coverage.detection.finished + coverage.detection.remaining} required
+          service/template checks finished
+        </span>
+      ) : (
+        <span>Detection coverage counts not recorded for this run</span>
+      )}
+      {!!scan.excludedHosts?.length && (
+        <span>
+          {scan.excludedHosts.length} non-public hosts excluded by scope policy
+        </span>
+      )}
+      <span>
+        Counts describe the bounded profile, not exhaustive asset coverage.
+      </span>
     </div>
   );
 }
@@ -2702,15 +3032,17 @@ function Scans({
   scans,
   select,
   run,
-  mutate,
 }: {
   scans: Scan[];
   select: (s: Scan) => void;
   run: () => void;
-  mutate: Mutation;
 }) {
   const [filter, setFilter] = useWorkspaceFilter("scanStatus", "all");
-  const rows = scans.filter((s) => filter === "all" || s.status === filter);
+  const rows = scans
+    .filter((s) => filter === "all" || s.status === filter)
+    .slice()
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  const { page, setPage, start } = useResultPage(rows.length);
   return (
     <>
       <div className="tab-line">
@@ -2721,6 +3053,7 @@ function Scans({
           "retrying",
           "completed",
           "partial",
+          "failed",
           "canceled",
         ].map((f) => (
           <button
@@ -2729,112 +3062,69 @@ function Scans({
             className={filter === f ? "tab-active" : ""}
             onClick={() => setFilter(f)}
           >
-            {f === "all" ? "All scans" : f.charAt(0).toUpperCase() + f.slice(1)}
+            {f === "all" ? "All scans" : statusLabel(f)}
             <span>
               {scans.filter((s) => f === "all" || s.status === f).length}
             </span>
           </button>
         ))}
       </div>
-      <div className="scan-list">
-        {rows.map((s) => (
-          <article className="scan-card" key={s.id}>
-            <div className="scan-card-head">
-              <span
-                className={`scan-icon ${s.status === "running" ? "scan-icon-running" : ""}`}
-              >
-                <Radar size={25} />
-              </span>
-              <div>
-                <button onClick={() => select(s)} className="scan-domain">
-                  {s.domain}
+      <div className="scan-list scan-history">
+        {rows.slice(start, start + 25).map((scan) => {
+          const problem = scan.stages.find(
+            (stage) => stage.coverageStatus === "incomplete",
+          );
+          const current = scan.stages.find(
+            (stage) => stage.status === "running",
+          );
+          return (
+            <article className="scan-card scan-history-row" key={scan.id}>
+              <div className="scan-history-identity">
+                <button onClick={() => select(scan)} className="scan-domain">
+                  {scan.domain}
                   <ArrowUpRight size={16} />
                 </button>
                 <p>
-                  {s.trigger} · Started {relative(s.startedAt)} · {s.rate}{" "}
-                  requests/s maximum configured ·{" "}
-                  {s.finishedAt
-                    ? `Finished ${relative(s.finishedAt)}`
-                    : "Awaiting completion"}
+                  {scan.trigger} · {relative(scan.startedAt)} ·{" "}
+                  <RunDuration start={scan.startedAt} end={scan.finishedAt} />
+                  {scan.parentScanId ? " · Continued run" : ""}
                 </p>
               </div>
-              <Badge
-                tone={
-                  s.status === "completed"
-                    ? "success"
-                    : s.status === "running"
-                      ? "blue"
-                      : ["partial", "failed"].includes(s.status)
+              <div className="scan-history-outcome">
+                <Badge
+                  tone={
+                    scan.status === "completed"
+                      ? "success"
+                      : ["partial", "failed"].includes(scan.status)
                         ? "warning"
                         : "neutral"
-                }
-              >
-                {s.status === "running" && (
-                  <Loader2 size={12} className="spin" />
-                )}
-                {statusLabel(s.status)}
-              </Badge>
-              <Button onClick={() => select(s)}>
-                View scan
+                  }
+                >
+                  {statusLabel(scan.status)}
+                </Badge>
+                <span>
+                  {current
+                    ? `${current.name} in progress`
+                    : problem
+                      ? `${problem.name}: checks remain`
+                      : scanSummary(scan)}
+                </span>
+              </div>
+              <div className="scan-history-counts">
+                <span>{scan.assets} assets</span>
+                <span>{scan.findings} observations</span>
+              </div>
+              <Button onClick={() => select(scan)}>
+                {["partial", "failed"].includes(scan.status)
+                  ? "Review & continue"
+                  : "View scan"}
                 <ArrowRight size={14} />
               </Button>
-              <ScanControls scan={s} mutate={mutate} />
-            </div>
-            <div className="scan-stages-inline">
-              {s.stages.map((st) => {
-                const status = stageStatus(s, st.status);
-                return (
-                  <div
-                    key={st.name}
-                    className={`inline-stage inline-stage-${status}`}
-                  >
-                    <span>
-                      {status === "completed" ? (
-                        <Check size={13} />
-                      ) : status === "running" ? (
-                        <Loader2 size={13} className="spin" />
-                      ) : (
-                        <span className="stage-dot" />
-                      )}
-                    </span>
-                    {st.name}
-                  </div>
-                );
-              })}
-            </div>
-            <p className="scan-outcome">{scanSummary(s)}</p>
-            <ScanCoverage scan={s} />
-            {s.status === "running" && (
-              <div className="scan-progress">
-                <span style={{ width: `${s.progress}%` }} />
-              </div>
-            )}
-            <div className="scan-card-footer">
-              <span>
-                <Network size={14} />
-                {s.assets} assets
-              </span>
-              <span>
-                <Shield size={14} />
-                {s.findings} findings
-              </span>
-              {s.excludedHosts?.length ? (
-                <span>{s.excludedHosts.length} non-public hosts excluded</span>
-              ) : null}
-              {s.error && (
-                <details className="scan-diagnostic">
-                  <summary>Technical reason</summary>
-                  <p>{s.error}</p>
-                </details>
-              )}
-              <span className="scan-tools">
-                Subfinder · DNSx · Naabu · HTTPx · TLSx · GAU · Katana ·
-                Gitleaks · Nuclei
-              </span>
-            </div>
-          </article>
-        ))}
+            </article>
+          );
+        })}
       </div>
+      <Pagination total={rows.length} page={page} setPage={setPage} />
       {!rows.length && (
         <Empty
           title={
@@ -2885,18 +3175,22 @@ function SettingsPage({
   return (
     <>
       <div className="tab-line">
-        {["General", "Scan controls", "Access", "Audit log"].map((t) => (
-          <button
-            key={t}
-            className={tab === t ? "tab-active" : ""}
-            onClick={() => setTab(t)}
-          >
-            {t}
-          </button>
-        ))}
+        {["General", "Scan controls", "Access", "Webhooks", "Audit log"].map(
+          (t) => (
+            <button
+              key={t}
+              className={tab === t ? "tab-active" : ""}
+              onClick={() => setTab(t)}
+            >
+              {t}
+            </button>
+          ),
+        )}
       </div>
       {tab === "Access" ? (
         <AccessPanel state={access} />
+      ) : tab === "Webhooks" ? (
+        <WebhooksPanel webhooks={access.webhooks || []} mutate={mutate} />
       ) : tab === "Audit log" ? (
         <>
           <div className="section-title audit-intro">
@@ -3023,23 +3317,6 @@ function SettingsPage({
                     period. Finding summaries and audit records are retained.
                   </small>
                 </label>
-              </div>
-              <div className="settings-section">
-                <div>
-                  <h2>Optional AI triage</h2>
-                  <p>Your evidence stays inside this deployment.</p>
-                </div>
-                <div className="integration-off">
-                  <ShieldCheck size={25} />
-                  <div>
-                    <strong>Off by default</strong>
-                    <p>
-                      Jev is a later-phase integration. No evidence is sent to
-                      third parties.
-                    </p>
-                  </div>
-                  <Badge>Not connected</Badge>
-                </div>
               </div>
             </>
           ) : (
@@ -3233,11 +3510,13 @@ function AddTarget({
   );
 }
 function RunScan({
+  state,
   verificationRequired,
   targets,
   onClose,
   onRun,
 }: {
+  state: State;
   verificationRequired: boolean;
   targets: Target[];
   onClose: () => void;
@@ -3246,8 +3525,29 @@ function RunScan({
   const [id, setID] = useState(targets.find((t) => t.canScan)?.id ?? ""),
     [busy, setBusy] = useState(false);
 
+  const unavailable =
+    state.me?.role === "viewer"
+      ? "A workspace analyst or owner can start scans."
+      : state.settings.paused
+        ? "Workspace scanning is paused. An owner can enable it in Settings."
+        : !state.runtime?.liveScanning
+          ? "Live scanning is unavailable in this environment."
+          : state.scans.some(
+                (scan) => scan.targetId === id && activeScanStatus(scan.status),
+              )
+            ? "This target already has an active scan. Follow it in Scan activity."
+            : state.runtime.workers === 0
+              ? "No worker is online. This scan will wait in the queue until a worker is available."
+              : "";
+  const blocked =
+    state.settings.paused ||
+    !state.runtime?.liveScanning ||
+    state.me?.role === "viewer" ||
+    state.scans.some(
+      (scan) => scan.targetId === id && activeScanStatus(scan.status),
+    );
   return (
-    <Modal title="A fresh look at your surface." onClose={onClose}>
+    <Modal title="Start a scoped assessment" onClose={onClose}>
       <p className="modal-lead">
         Select a domain to start discovery and check for exposures.
       </p>
@@ -3268,6 +3568,22 @@ function RunScan({
             ))}
         </select>
       </label>
+      <section className="scan-preflight" aria-label="Scan configuration">
+        <h3>Bounded assessment profile</h3>
+        <p>
+          Maximum {state.settings.rate} requests/s · concurrency{" "}
+          {state.settings.concurrency} · up to 60 minutes of worker execution.
+        </p>
+        <p>
+          Curated HTTP checks, scoped crawling and public JavaScript analysis.
+          This does not establish exhaustive vulnerability coverage.
+        </p>
+        {unavailable && (
+          <p className={blocked ? "form-error" : "stage-issue"} role="status">
+            {unavailable}
+          </p>
+        )}
+      </section>
       <div className="modal-safety">
         <Radar size={22} />
         <p>
@@ -3283,7 +3599,7 @@ function RunScan({
         <Button onClick={onClose}>Cancel</Button>
         <Button
           primary
-          disabled={!id || busy}
+          disabled={!id || busy || blocked}
           onClick={async () => {
             setBusy(true);
             await onRun(id);
@@ -3567,10 +3883,12 @@ function AssetDetail({
 }
 function FindingDetail({
   finding,
+  associatedAsset,
   onClose,
   mutate,
 }: {
   finding: Finding;
+  associatedAsset?: Asset;
   onClose: () => void;
   mutate: Mutation;
 }) {
@@ -3585,14 +3903,24 @@ function FindingDetail({
     <Modal title={finding.title} onClose={onClose} wide>
       <div className="detail-status">
         <Severity value={finding.severity} />
+        {finding.category && (
+          <span className="badge badge-accent">
+            {finding.category.toUpperCase()}
+          </span>
+        )}
         <Badge tone={finding.status === "resolved" ? "success" : "neutral"}>
           {finding.status}
         </Badge>
         <span>{finding.host}</span>
+        {finding.port && (
+          <span>
+            Port {finding.port}/{finding.protocol || "tcp"}
+          </span>
+        )}
       </div>
       <div className="finding-description">
         <div className="finding-origin">
-          <span>Affected service</span>
+          <span>Affected service / origin</span>
           <code>{finding.matchedAt || finding.host}</code>
           <CopyValue
             value={finding.matchedAt || finding.host}
@@ -3606,8 +3934,45 @@ function FindingDetail({
       </div>
       <dl className="detail-grid">
         <div>
-          <dt>Template</dt>
-          <dd>{finding.template}</dd>
+          <dt>Category</dt>
+          <dd>
+            {finding.category
+              ? finding.category.charAt(0).toUpperCase() +
+                finding.category.slice(1)
+              : "Vulnerability"}
+          </dd>
+        </div>
+        <div>
+          <dt>Target host</dt>
+          <dd>{finding.host}</dd>
+        </div>
+        <div>
+          <dt>Resolved IP</dt>
+          <dd>{finding.ip || associatedAsset?.ip || "Pending DNS"}</dd>
+        </div>
+        <div>
+          <dt>Target port</dt>
+          <dd>
+            {finding.port
+              ? `${finding.port} / ${(finding.protocol || "tcp").toUpperCase()}`
+              : associatedAsset?.ports?.length
+                ? associatedAsset.ports.join(", ")
+                : "—"}
+          </dd>
+        </div>
+        <div>
+          <dt>Template ID</dt>
+          <dd>
+            <code>{finding.template}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Discovery stage</dt>
+          <dd>{finding.stageName || "Detection"}</dd>
+        </div>
+        <div>
+          <dt>Scanner tool</dt>
+          <dd>{finding.tool || "nuclei"}</dd>
         </div>
         <div>
           <dt>First seen</dt>
@@ -3622,6 +3987,93 @@ function FindingDetail({
           <dd>Secrets redacted</dd>
         </div>
       </dl>
+
+      {finding.parameters && finding.parameters.length > 0 && (
+        <div className="pentester-section">
+          <h4>Route Parameters Identified ({finding.parameters.length})</h4>
+          <div className="param-chips-wrap">
+            {finding.parameters.map((p) => (
+              <span key={p} className="param-chip">
+                <code>{p}</code>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {((finding.technologies && finding.technologies.length > 0) ||
+        (associatedAsset?.technologies &&
+          associatedAsset.technologies.length > 0)) && (
+        <div className="pentester-section">
+          <h4>Technologies Detected on Host</h4>
+          <div className="param-chips-wrap">
+            {(finding.technologies || associatedAsset?.technologies || []).map(
+              (t) => (
+                <span key={t} className="badge badge-neutral">
+                  {t}
+                </span>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+
+      {associatedAsset &&
+        associatedAsset.ports &&
+        associatedAsset.ports.length > 0 && (
+          <div className="pentester-section">
+            <h4>All Open Ports on Host ({associatedAsset.ports.length})</h4>
+            <div className="param-chips-wrap">
+              {associatedAsset.ports.map((p) => (
+                <span
+                  key={p}
+                  className={`port-chip ${finding.port === p ? "port-chip-active" : ""}`}
+                >
+                  {p}/tcp
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      {(finding.stepLog || finding.stageName) && (
+        <div className="pentester-section scan-log-section">
+          <div className="scan-log-header">
+            <h4>Scan Step Execution &amp; Success Log</h4>
+            <span
+              className={`badge ${finding.stepSuccess !== false ? "badge-success" : "badge-neutral"}`}
+            >
+              {finding.stepSuccess !== false
+                ? "Step Succeeded"
+                : "Step Executed"}
+            </span>
+          </div>
+          <div className="scan-step-meta">
+            {finding.stageName && (
+              <span>
+                <strong>Stage:</strong> {finding.stageName}
+              </span>
+            )}
+            {finding.tool && (
+              <span>
+                <strong>Tool:</strong> {finding.tool}
+              </span>
+            )}
+            {finding.scanId && (
+              <span>
+                <strong>Scan ID:</strong> <code>{finding.scanId}</code>
+              </span>
+            )}
+          </div>
+          {finding.stepLog ? (
+            <pre className="step-log-output">{finding.stepLog}</pre>
+          ) : (
+            <p className="field-hint">
+              Observations validated and committed during{" "}
+              {finding.stageName || "scanning"} pass.
+            </p>
+          )}
+        </div>
+      )}
       <button
         className="evidence-toggle"
         aria-expanded={evidence}
@@ -3728,10 +4180,12 @@ function ScanDetail({
   scan,
   onClose,
   mutate,
+  canManage,
 }: {
   scan: Scan;
   onClose: () => void;
   mutate: Mutation;
+  canManage: boolean;
 }) {
   return (
     <Modal title={`Scan · ${scan.domain}`} onClose={onClose} wide>
@@ -3753,7 +4207,66 @@ function ScanDetail({
       </div>
       <p className="scan-outcome">{scanSummary(scan)}</p>
       <ScanCoverage scan={scan} />
-      <ScanControls scan={scan} mutate={mutate} />
+      {!!scan.coverage?.serviceIssues?.length && (
+        <section
+          className="service-issues"
+          aria-label="Services with incomplete checks"
+        >
+          <h3>Services that need another pass</h3>
+          <ul>
+            {scan.coverage.serviceIssues.map((issue) => (
+              <li key={issue.origin}>
+                <code>{issue.origin}</code>
+                <span>
+                  {(
+                    {
+                      forbidden: "HTTP 403 · access denied",
+                      rate_limited: "HTTP 429 · rate limited",
+                      server_error: "Server error",
+                      failed: "Request failed",
+                      unfinished: "No completed response",
+                    } as Record<string, string>
+                  )[issue.reason] ?? issue.reason}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {(scan.coverage.serviceIssueCount ?? 0) >
+            scan.coverage.serviceIssues.length && (
+            <p>
+              Showing {scan.coverage.serviceIssues.length} of{" "}
+              {scan.coverage.serviceIssueCount} affected origins.
+            </p>
+          )}
+        </section>
+      )}
+      {scan.resume && (
+        <section className="resume-preview" aria-label="Continuation plan">
+          <h3>Continue from {scan.resume.fromStage}</h3>
+          <p>
+            {scan.resume.retainedStages} earlier stage passes retained ·{" "}
+            {scan.resume.repeatedStages} stage passes run again.
+          </p>
+          <p>{scan.resume.checkpointPolicy}</p>
+          <p>
+            A new run keeps this attempt in history. Availability and target
+            authorization are checked again when you continue.
+          </p>
+        </section>
+      )}
+      {scan.parentScanId && (
+        <button
+          className="text-action"
+          onClick={() => openWorkspaceDetail("scan", scan.parentScanId!)}
+        >
+          View previous attempt <ArrowUpRight size={14} />
+        </button>
+      )}
+      {canManage ? (
+        <ScanControls scan={scan} mutate={mutate} />
+      ) : (
+        <p className="field-hint">An analyst or owner can manage scans.</p>
+      )}
       {scan.error && (
         <details className="scan-diagnostic">
           <summary>Technical reason</summary>
@@ -3762,7 +4275,10 @@ function ScanDetail({
       )}
       <div className="stage-list">
         {scan.stages.map((st) => {
-          const status = stageStatus(scan, st.status);
+          const status =
+            st.status === "completed" && st.coverageStatus === "incomplete"
+              ? "incomplete"
+              : stageStatus(scan, st.status);
           return (
             <section className={`stage-detail stage-${status}`} key={st.name}>
               <span>
@@ -3770,7 +4286,7 @@ function ScanDetail({
                   <Check size={18} />
                 ) : status === "running" ? (
                   <Loader2 size={18} className="spin" />
-                ) : status === "interrupted" ? (
+                ) : status === "interrupted" || status === "incomplete" ? (
                   <TriangleAlert size={18} />
                 ) : (
                   <Clock3 size={18} />
@@ -3782,6 +4298,26 @@ function ScanDetail({
                   {st.tool}
                   {st.attempts ? ` · attempt ${st.attempts}` : ""}
                 </small>
+                {st.startedAt && (
+                  <small>
+                    <RunDuration
+                      start={st.startedAt}
+                      end={st.finishedAt || scan.finishedAt}
+                    />{" "}
+                    ·{" "}
+                    {st.finishedAt
+                      ? "Pass finished"
+                      : activeScanStatus(scan.status)
+                        ? "Elapsed"
+                        : "Interrupted"}
+                  </small>
+                )}
+                {st.issue && (
+                  <p className="stage-issue">
+                    {st.status !== "completed" ? "Previous pass: " : ""}
+                    {st.issue}
+                  </p>
+                )}
                 {st.log && (
                   <details className="stage-diagnostics">
                     <summary>Technical log</summary>
@@ -3789,7 +4325,13 @@ function ScanDetail({
                   </details>
                 )}
               </div>
-              <Badge>{statusLabel(status)}</Badge>
+              <Badge tone={status === "incomplete" ? "warning" : "neutral"}>
+                {status === "incomplete"
+                  ? "Finished with gaps"
+                  : status === "completed"
+                    ? "Pass finished"
+                    : statusLabel(status)}
+              </Badge>
             </section>
           );
         })}

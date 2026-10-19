@@ -81,11 +81,9 @@ func RequestIDFromContext(ctx context.Context) string {
 
 // Log returns an slog.Logger tagged with request context attributes if present.
 func Log(ctx context.Context) *slog.Logger {
-	if rootLogger == nil {
-		InitLogger()
-	}
+	logger := InitLogger()
 	if reqID := RequestIDFromContext(ctx); reqID != "" {
-		return rootLogger.With("request_id", reqID)
+		return logger.With("request_id", reqID)
 	}
-	return rootLogger
+	return logger
 }

@@ -7,6 +7,9 @@ export type Page =
   | "Inventory"
   | "Endpoints"
   | "Findings"
+  | "Takeovers"
+  | "Governance"
+  | "Hazards"
   | "Changes"
   | "Scan activity"
   | "Targets"
@@ -27,6 +30,9 @@ const pages: Record<string, Page> = {
   inventory: "Inventory",
   endpoints: "Endpoints",
   findings: "Findings",
+  takeovers: "Takeovers",
+  governance: "Governance",
+  hazards: "Hazards",
   changes: "Changes",
   scans: "Scan activity",
   targets: "Targets",

@@ -60,3 +60,66 @@ FROM scans s,
 LATERAL jsonb_array_elements(s.data->'stages') AS stage;
 
 INSERT INTO schema_migrations(version) VALUES(3) ON CONFLICT DO NOTHING;
+
+-- Migration 4: DNS Posture, Subdomain Takeovers, Endpoint Hazards, and Notification Webhooks
+CREATE TABLE IF NOT EXISTS domain_dns_posture (
+    id text PRIMARY KEY,
+    scan_id text NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    domain VARCHAR(255) NOT NULL,
+    spf_record TEXT,
+    spf_status VARCHAR(50) NOT NULL,
+    dmarc_record TEXT,
+    dmarc_policy VARCHAR(50) NOT NULL,
+    dkim_detected BOOLEAN DEFAULT FALSE,
+    mx_records JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_domain_dns_posture_scan ON domain_dns_posture(scan_id);
+CREATE INDEX IF NOT EXISTS idx_domain_dns_posture_domain ON domain_dns_posture(domain);
+
+CREATE TABLE IF NOT EXISTS subdomain_takeovers (
+    id text PRIMARY KEY,
+    scan_id text NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    subdomain VARCHAR(255) NOT NULL,
+    cname VARCHAR(255) NOT NULL,
+    service_provider VARCHAR(100) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'open',
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reopen_count INTEGER NOT NULL DEFAULT 0,
+    missing_scans INTEGER NOT NULL DEFAULT 0,
+    CONSTRAINT uq_takeover_subdomain UNIQUE(subdomain, service_provider)
+);
+CREATE INDEX IF NOT EXISTS idx_takeovers_scan ON subdomain_takeovers(scan_id);
+CREATE INDEX IF NOT EXISTS idx_takeovers_status ON subdomain_takeovers(status);
+
+CREATE TABLE IF NOT EXISTS endpoint_hazards (
+    id text PRIMARY KEY,
+    scan_id text NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    parameter VARCHAR(100) NOT NULL,
+    hazard_class VARCHAR(50) NOT NULL,
+    severity VARCHAR(20) NOT NULL DEFAULT 'medium',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_endpoint_hazards_scan ON endpoint_hazards(scan_id);
+CREATE INDEX IF NOT EXISTS idx_endpoint_hazards_class ON endpoint_hazards(hazard_class);
+
+CREATE TABLE IF NOT EXISTS notification_webhooks (
+    id text PRIMARY KEY,
+    url TEXT NOT NULL,
+    webhook_type VARCHAR(50) NOT NULL DEFAULT 'generic',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    notify_on_new_assets BOOLEAN NOT NULL DEFAULT TRUE,
+    notify_on_new_ports BOOLEAN NOT NULL DEFAULT TRUE,
+    notify_on_high_findings BOOLEAN NOT NULL DEFAULT TRUE,
+    notify_on_takeovers BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO schema_migrations(version) VALUES(4) ON CONFLICT DO NOTHING;
+
+-- Migration 5: Add missing_scans column to subdomain_takeovers for two-scan confirmation
+ALTER TABLE subdomain_takeovers ADD COLUMN IF NOT EXISTS missing_scans INTEGER NOT NULL DEFAULT 0;
+INSERT INTO schema_migrations(version) VALUES(5) ON CONFLICT DO NOTHING;
+

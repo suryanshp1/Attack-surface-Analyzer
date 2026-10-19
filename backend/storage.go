@@ -113,6 +113,53 @@ func (s *Server) migrateAndLoad() error {
 			return err
 		}
 	}
+	s.state.DNSPosture = []DomainDNSPosture{}
+	s.state.Takeovers = []SubdomainTakeover{}
+	s.state.Hazards = []EndpointHazard{}
+	s.state.Webhooks = []NotificationWebhook{}
+
+	if postureRows, err := s.db.Query(ctx, "SELECT id, scan_id, domain, COALESCE(spf_record,''), spf_status, COALESCE(dmarc_record,''), dmarc_policy, dkim_detected, mx_records, created_at::text FROM domain_dns_posture ORDER BY created_at DESC"); err == nil {
+		for postureRows.Next() {
+			var p DomainDNSPosture
+			var mxJSON []byte
+			if scanErr := postureRows.Scan(&p.ID, &p.ScanID, &p.Domain, &p.SPFRecord, &p.SPFStatus, &p.DMARCRecord, &p.DMARCPolicy, &p.DKIMDetected, &mxJSON, &p.CreatedAt); scanErr == nil {
+				_ = json.Unmarshal(mxJSON, &p.MXRecords)
+				s.state.DNSPosture = append(s.state.DNSPosture, p)
+			}
+		}
+		postureRows.Close()
+	}
+
+	if toRows, err := s.db.Query(ctx, "SELECT id, scan_id, subdomain, cname, service_provider, status, first_seen::text, last_seen::text, reopen_count, COALESCE(missing_scans, 0) FROM subdomain_takeovers ORDER BY last_seen DESC"); err == nil {
+		for toRows.Next() {
+			var to SubdomainTakeover
+			if scanErr := toRows.Scan(&to.ID, &to.ScanID, &to.Subdomain, &to.CNAME, &to.ServiceProvider, &to.Status, &to.FirstSeen, &to.LastSeen, &to.ReopenCount, &to.MissingScans); scanErr == nil {
+				s.state.Takeovers = append(s.state.Takeovers, to)
+			}
+		}
+		toRows.Close()
+	}
+
+	if hzRows, err := s.db.Query(ctx, "SELECT id, scan_id, url, parameter, hazard_class, severity, created_at::text FROM endpoint_hazards ORDER BY created_at DESC"); err == nil {
+		for hzRows.Next() {
+			var hz EndpointHazard
+			if scanErr := hzRows.Scan(&hz.ID, &hz.ScanID, &hz.URL, &hz.Parameter, &hz.HazardClass, &hz.Severity, &hz.CreatedAt); scanErr == nil {
+				s.state.Hazards = append(s.state.Hazards, hz)
+			}
+		}
+		hzRows.Close()
+	}
+
+	if whRows, err := s.db.Query(ctx, "SELECT id, url, webhook_type, enabled, notify_on_new_assets, notify_on_new_ports, notify_on_high_findings, notify_on_takeovers, created_at::text FROM notification_webhooks ORDER BY created_at DESC"); err == nil {
+		for whRows.Next() {
+			var wh NotificationWebhook
+			if scanErr := whRows.Scan(&wh.ID, &wh.URL, &wh.WebhookType, &wh.Enabled, &wh.NotifyOnNewAssets, &wh.NotifyOnNewPorts, &wh.NotifyOnHighFindings, &wh.NotifyOnTakeovers, &wh.CreatedAt); scanErr == nil {
+				s.state.Webhooks = append(s.state.Webhooks, wh)
+			}
+		}
+		whRows.Close()
+	}
+
 	s.state.Demo = false
 	for _, t := range s.state.Targets {
 		if t.Demo {
@@ -208,6 +255,62 @@ func (s *Server) saveRelational() error {
 		if err = put("audit_log", e.ID, "", e); err != nil {
 			return err
 		}
+	}
+	for _, p := range s.state.DNSPosture {
+		mxB, _ := json.Marshal(p.MXRecords)
+		createdAt := p.CreatedAt
+		if createdAt == "" {
+			createdAt = now()
+		}
+		_, _ = tx.Exec(ctx, `INSERT INTO domain_dns_posture(id, scan_id, domain, spf_record, spf_status, dmarc_record, dmarc_policy, dkim_detected, mx_records, created_at)
+			VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT(id) DO UPDATE SET spf_record=EXCLUDED.spf_record, spf_status=EXCLUDED.spf_status, dmarc_record=EXCLUDED.dmarc_record, dmarc_policy=EXCLUDED.dmarc_policy, dkim_detected=EXCLUDED.dkim_detected, mx_records=EXCLUDED.mx_records`,
+			p.ID, p.ScanID, p.Domain, p.SPFRecord, p.SPFStatus, p.DMARCRecord, p.DMARCPolicy, p.DKIMDetected, mxB, createdAt)
+	}
+	for _, to := range s.state.Takeovers {
+		firstSeen := to.FirstSeen
+		if firstSeen == "" {
+			firstSeen = now()
+		}
+		lastSeen := to.LastSeen
+		if lastSeen == "" {
+			lastSeen = now()
+		}
+		_, _ = tx.Exec(ctx, `INSERT INTO subdomain_takeovers(id, scan_id, subdomain, cname, service_provider, status, first_seen, last_seen, reopen_count, missing_scans)
+			VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT(subdomain, service_provider) DO UPDATE SET scan_id=EXCLUDED.scan_id, cname=EXCLUDED.cname, status=EXCLUDED.status, last_seen=EXCLUDED.last_seen, reopen_count=EXCLUDED.reopen_count, missing_scans=EXCLUDED.missing_scans`,
+			to.ID, to.ScanID, to.Subdomain, to.CNAME, to.ServiceProvider, to.Status, firstSeen, lastSeen, to.ReopenCount, to.MissingScans)
+	}
+	for _, hz := range s.state.Hazards {
+		createdAt := hz.CreatedAt
+		if createdAt == "" {
+			createdAt = now()
+		}
+		_, _ = tx.Exec(ctx, `INSERT INTO endpoint_hazards(id, scan_id, url, parameter, hazard_class, severity, created_at)
+			VALUES($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT(id) DO UPDATE SET scan_id=EXCLUDED.scan_id, severity=EXCLUDED.severity`,
+			hz.ID, hz.ScanID, hz.URL, hz.Parameter, hz.HazardClass, hz.Severity, createdAt)
+	}
+	seenWebhooks := map[string]bool{}
+	for _, wh := range s.state.Webhooks {
+		seenWebhooks[wh.ID] = true
+		createdAt := wh.CreatedAt
+		if createdAt == "" {
+			createdAt = now()
+		}
+		_, _ = tx.Exec(ctx, `INSERT INTO notification_webhooks(id, url, webhook_type, enabled, notify_on_new_assets, notify_on_new_ports, notify_on_high_findings, notify_on_takeovers, created_at)
+			VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT(id) DO UPDATE SET url=EXCLUDED.url, webhook_type=EXCLUDED.webhook_type, enabled=EXCLUDED.enabled, notify_on_new_assets=EXCLUDED.notify_on_new_assets, notify_on_new_ports=EXCLUDED.notify_on_new_ports, notify_on_high_findings=EXCLUDED.notify_on_high_findings, notify_on_takeovers=EXCLUDED.notify_on_takeovers`,
+			wh.ID, wh.URL, wh.WebhookType, wh.Enabled, wh.NotifyOnNewAssets, wh.NotifyOnNewPorts, wh.NotifyOnHighFindings, wh.NotifyOnTakeovers, createdAt)
+	}
+	if len(seenWebhooks) > 0 {
+		var ids []string
+		for id := range seenWebhooks {
+			ids = append(ids, id)
+		}
+		_, _ = tx.Exec(ctx, "DELETE FROM notification_webhooks WHERE NOT (id = ANY($1))", ids)
+	} else {
+		_, _ = tx.Exec(ctx, "DELETE FROM notification_webhooks")
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return err
@@ -330,7 +433,7 @@ func runMigrations() {
 	if _, err = tx.Exec(ctx, schemaSQL); err != nil {
 		panic(err)
 	}
-	if _, err = tx.Exec(ctx, `GRANT USAGE ON SCHEMA public TO surfacer_app; REVOKE CREATE ON SCHEMA public FROM PUBLIC; GRANT SELECT,INSERT,UPDATE ON workspace_settings,workspace_runtime,targets,scans,assets,findings,historical_endpoints TO surfacer_app; GRANT SELECT,INSERT ON audit_log,change_events TO surfacer_app; GRANT SELECT ON schema_migrations,v_scans,v_audit_log,v_scan_stages TO surfacer_app;`); err != nil {
+	if _, err = tx.Exec(ctx, `GRANT USAGE ON SCHEMA public TO surfacer_app; REVOKE CREATE ON SCHEMA public FROM PUBLIC; GRANT SELECT,INSERT,UPDATE ON workspace_settings,workspace_runtime,targets,scans,assets,findings,historical_endpoints,domain_dns_posture,subdomain_takeovers,endpoint_hazards TO surfacer_app; GRANT SELECT,INSERT,UPDATE,DELETE ON notification_webhooks TO surfacer_app; GRANT SELECT,INSERT ON audit_log,change_events TO surfacer_app; GRANT SELECT ON schema_migrations,v_scans,v_audit_log,v_scan_stages TO surfacer_app;`); err != nil {
 		panic(err)
 	}
 	if err = tx.Commit(ctx); err != nil {

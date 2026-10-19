@@ -75,9 +75,40 @@ export type Finding = {
   remediation: string;
   evidence: string;
   notes: { text: string; at: string; actor: string }[];
+  category?:
+    | "vulnerability"
+    | "port"
+    | "endpoint"
+    | "hazard"
+    | "secret"
+    | "host"
+    | string;
+  port?: number;
+  protocol?: string;
+  method?: string;
+  parameters?: string[];
+  stageName?: string;
+  tool?: string;
+  technologies?: string[];
+  ip?: string;
+  scanId?: string;
+  stepLog?: string;
+  stepSuccess?: boolean;
 };
 export type Scan = {
+  parentScanId?: string;
+  resume?: {
+    fromStage: string;
+    retainedStages: number;
+    repeatedStages: number;
+    checkpointPolicy: string;
+  };
+  concurrency?: number;
   coverage?: {
+    http?: { finished: number; remaining: number };
+    detection?: { finished: number; remaining: number };
+    serviceIssues?: { origin: string; reason: string }[];
+    serviceIssueCount?: number;
     crawlFinished: number;
     crawlRemaining: number;
     portFinished: number;
@@ -93,6 +124,10 @@ export type Scan = {
   finishedAt: string;
   progress: number;
   stages: {
+    coverageStatus?: "finished" | "incomplete" | "unknown";
+    issue?: string;
+    startedAt?: string;
+    finishedAt?: string;
     name: string;
     status: string;
     tool: string;
@@ -122,6 +157,61 @@ export type Settings = {
   retention: number;
   paused: boolean;
 };
+export type MXRecord = {
+  host: string;
+  pref: number;
+  ips?: string[];
+};
+export type DomainDNSPosture = {
+  id: string;
+  scanId: string;
+  domain: string;
+  spfRecord: string;
+  spfStatus: "secure" | "softfail" | "permissive" | "missing";
+  dmarcRecord: string;
+  dmarcPolicy: "reject" | "quarantine" | "none" | "missing";
+  dkimDetected: boolean;
+  mxRecords: MXRecord[];
+  createdAt: string;
+};
+export type SubdomainTakeover = {
+  id: string;
+  scanId: string;
+  subdomain: string;
+  cname: string;
+  serviceProvider: string;
+  status: "open" | "resolved" | "suppressed";
+  firstSeen: string;
+  lastSeen: string;
+  reopenCount: number;
+  missingScans?: number;
+};
+export type EndpointHazard = {
+  id: string;
+  scanId: string;
+  url: string;
+  parameter: string;
+  hazardClass:
+    | "ssrf_candidate"
+    | "redirect_candidate"
+    | "lfi_candidate"
+    | "sqli_candidate"
+    | "debug_flag"
+    | "sensitive_file";
+  severity: "critical" | "high" | "medium" | "low";
+  createdAt: string;
+};
+export type NotificationWebhook = {
+  id: string;
+  url: string;
+  webhookType: "slack" | "discord" | "generic";
+  enabled: boolean;
+  notifyOnNewAssets: boolean;
+  notifyOnNewPorts: boolean;
+  notifyOnHighFindings: boolean;
+  notifyOnTakeovers: boolean;
+  createdAt: string;
+};
 export type State = {
   history?: Endpoint[];
   me?: { id: string; name: string; role: string };
@@ -140,6 +230,10 @@ export type State = {
   events: Event[];
   audit: Event[];
   settings: Settings;
+  dnsPosture?: DomainDNSPosture[];
+  takeovers?: SubdomainTakeover[];
+  hazards?: EndpointHazard[];
+  webhooks?: NotificationWebhook[];
   runtime?: {
     liveScanning: boolean;
     workers: number;

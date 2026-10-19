@@ -85,6 +85,9 @@ func TestNativeScannerPipeline(t *testing.T) {
 		}
 		return (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimPrefix(fixture.URL, "http://"))
 	}}
+	// socksServer sets these production limits; this fixture accepts sockets directly.
+	g.tcpTraffic.interval = 100 * time.Millisecond
+	g.tcpTraffic.concurrency = 5
 	proxy := httptest.NewServer(http.HandlerFunc(g.serve))
 	defer proxy.Close()
 	socks, err := net.Listen("tcp", "127.0.0.1:1080")
@@ -120,7 +123,12 @@ func TestNativeScannerPipeline(t *testing.T) {
 			message.Header.Response = true
 			message.Header.RecursionAvailable = true
 			message.Answers = nil
+			message.RCode = dnsmessage.RCodeSuccess
 			for _, q := range message.Questions {
+				if strings.TrimSuffix(q.Name.String(), ".") != "fixture.example" {
+					message.RCode = dnsmessage.RCodeNameError
+					continue
+				}
 				if q.Type == dnsmessage.TypeA {
 					message.Answers = append(message.Answers, dnsmessage.Resource{Header: dnsmessage.ResourceHeader{Name: q.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60}, Body: &dnsmessage.AResource{A: [4]byte{1, 1, 1, 1}}})
 				}
@@ -144,7 +152,7 @@ func TestNativeScannerPipeline(t *testing.T) {
 	if err = w.call(context.Background(), "/internal/claim", map[string]any{"worker": w.ID, "versions": toolVersions}, &claim); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
 	defer cancel()
 	w.execute(ctx, claim)
 	s.mu.Lock()

@@ -107,7 +107,7 @@ func (w *Worker) scanPorts(ctx context.Context, c Claim, cp Checkpoint, dir stri
 			logs = append(logs, logText)
 		}
 		found := map[string][]int{}
-		parseErr := jsonLines(out, func(b []byte) error {
+		parseErr := jsonLines(completeScannerRecords(out, runErr), func(b []byte) error {
 			var row struct {
 				IP   string `json:"ip"`
 				Port int    `json:"port"`
@@ -154,27 +154,9 @@ func (w *Worker) scanPorts(ctx context.Context, c Claim, cp Checkpoint, dir stri
 			incomplete = true
 		}
 		// Persist every finished batch before starting another. The same lease and stage order apply.
-		if w.API != "" {
-			stage := -1
-			for i, st := range c.Scan.Stages {
-				if st.Name == "Port discovery" {
-					stage = i
-					break
-				}
-			}
-			if stage >= 0 {
-				payload := w.payload(c.Scan)
-				payload["stage"] = stage
-				payload["status"] = "progress"
-				payload["checkpoint"] = cp
-				payload["log"] = fmt.Sprintf("Naabu: %d/%d addresses fully checked; %d ports/address; rate <= %d/s.", len(cp.PortResults), len(ips), len(commonPorts), min(max(c.Scan.Rate, 1), 10))
-				commitCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-				e = w.call(commitCtx, "/internal/stage", payload, nil)
-				stop()
-				if e != nil {
-					return cp, "", e
-				}
-			}
+		progress := fmt.Sprintf("Naabu: %d/%d addresses fully checked; %d ports/address; rate <= %d/s.", len(cp.PortResults), len(ips), len(commonPorts), min(max(c.Scan.Rate, 1), 10))
+		if e = w.checkpoint(ctx, c, "Port discovery", cp, progress); e != nil {
+			return cp, strings.Join(logs, "\n"), e
 		}
 		if ctx.Err() != nil {
 			incomplete = true
@@ -219,14 +201,10 @@ func (w *Worker) assessTLS(ctx context.Context, c Claim, cp Checkpoint, dir stri
 	if err != nil {
 		return cp, "", err
 	}
-	out, logs, err := command(ctx, "tlsx", []string{"-l", input, "-json", "-silent", "-duc", "-sm", "ctls", "-r", c.DNS, "-proxy", socksProxy(c), "-c", "2", "-timeout", "8", "-retry", "0", "-delay", "500ms", "-tv", "-cipher", "-ex", "-ss", "-mm", "-un"}, "", dir)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return cp, logs, err
-		}
-		issue := fmt.Sprintf("TLSx assessment unavailable: %v", err)
-		cp.SourceIssues = append(cp.SourceIssues, issue)
-		return cp, fmt.Sprintf("TLSx assessment unavailable: %s", logs), nil
+	out, logs, runErr := w.runScanner(ctx, "tlsx", []string{"-l", input, "-json", "-silent", "-duc", "-sm", "ctls", "-r", c.DNS, "-proxy", socksProxy(c), "-c", "2", "-timeout", "8", "-retry", "0", "-delay", "500ms", "-tv", "-cipher", "-ex", "-ss", "-mm", "-un"}, "", dir)
+	out = completeScannerRecords(out, runErr)
+	if runErr != nil {
+		cp.SourceIssues = append(cp.SourceIssues, fmt.Sprintf("TLSx assessment incomplete: %v", runErr))
 	}
 	count := 0
 	err = jsonLines(out, func(b []byte) error {
@@ -275,7 +253,19 @@ func (w *Worker) assessTLS(ctx context.Context, c Claim, cp Checkpoint, dir stri
 				id, title, severity string
 			}{{row.SelfSigned, "tls-self-signed", "Self-signed TLS certificate", "medium"}, {row.Mismatched, "tls-name-mismatch", "TLS certificate hostname mismatch", "medium"}, {row.Untrusted, "tls-untrusted", "Untrusted TLS certificate chain", "medium"}} {
 				if issue.match {
-					cp.Findings = append(cp.Findings, Finding{Host: a.Host, Template: issue.id, MatchedAt: origin, Title: issue.title, Severity: issue.severity, Description: "TLSx observed a certificate trust or name mismatch on this public service.", Remediation: "Install a publicly trusted certificate covering the served hostname and provide the full certificate chain.", Evidence: fmt.Sprintf("TLSx host: %s\nTLS: %s\nCipher: %s\nIssuer: %s\nExpiry: %s", origin, row.Version, row.Cipher, row.Issuer, row.NotAfter)})
+					cp.Findings = append(cp.Findings, Finding{
+						Host:        a.Host,
+						Template:    issue.id,
+						MatchedAt:   origin,
+						Title:       issue.title,
+						Severity:    issue.severity,
+						Description: "TLSx observed a certificate trust or name mismatch on this public service.",
+						Remediation: "Install a publicly trusted certificate covering the served hostname and provide the full certificate chain.",
+						Evidence:    fmt.Sprintf("TLSx host: %s\nTLS: %s\nCipher: %s\nIssuer: %s\nExpiry: %s", origin, row.Version, row.Cipher, row.Issuer, row.NotAfter),
+						Category:    "vulnerability",
+						StageName:   "TLS assessment",
+						Tool:        "tlsx",
+					})
 				}
 			}
 			if cp.SecretCoverage == nil {
@@ -287,7 +277,7 @@ func (w *Worker) assessTLS(ctx context.Context, c Claim, cp Checkpoint, dir stri
 		}
 		return nil
 	})
-	return cp, fmt.Sprintf("TLSx assessed %d public TLS services; protocol, cipher, SAN, issuer, expiry and trust metadata. %s", count, logs), err
+	return cp, fmt.Sprintf("TLSx assessed %d public TLS services; protocol, cipher, SAN, issuer, expiry and trust metadata. %s", count, logs), errors.Join(runErr, err)
 }
 func (w *Worker) historical(ctx context.Context, c Claim, cp Checkpoint, proxy, dir string) (Checkpoint, string, error) {
 	runner := command
@@ -297,7 +287,11 @@ func (w *Worker) historical(ctx context.Context, c Claim, cp Checkpoint, proxy, 
 	out, logs, err := runner(ctx, "gau", []string{c.Target.Domain, "--providers", "wayback,commoncrawl", "--subs", "--threads", "1", "--timeout", "12", "--retries", "0", "--proxy", proxy}, proxy, dir)
 	if err != nil {
 		cp.SourceIssues = append(cp.SourceIssues, "Historical providers unavailable; live scan continues.")
-		return cp, "Historical discovery unavailable: " + logs, nil
+		if n := bytes.LastIndexByte(out, '\n'); n >= 0 {
+			out = out[:n+1]
+		} else {
+			out = nil
+		}
 	}
 	seen := map[string]bool{}
 	scanner := bufio.NewScanner(bytes.NewReader(out))
@@ -342,7 +336,7 @@ func serviceOrigin(raw string) string {
 }
 
 func resumeNetworkCheckpoint(old Checkpoint) Checkpoint {
-	cp := Checkpoint{Hosts: old.Hosts, DNS: old.DNS, PortResults: old.PortResults, KnownSecrets: old.KnownSecrets}
+	cp := Checkpoint{Hosts: old.Hosts, DNS: old.DNS, PortResults: old.PortResults, KnownSecrets: old.KnownSecrets, IncompleteStages: old.IncompleteStages, Takeovers: old.Takeovers, DNSPosture: old.DNSPosture}
 	for _, a := range old.Assets {
 		fresh := Asset{Host: a.Host, Type: "Domain", IP: a.IP, Source: a.Source, Ports: a.Ports, Technologies: []string{}}
 		for _, ip := range old.DNS[a.Host] {
