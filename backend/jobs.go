@@ -122,6 +122,14 @@ func fingerprint(values ...string) string {
 }
 func (s *Server) publicState() State {
 	out := s.state
+	out.Webhooks = publicWebhooks(s.state.Webhooks)
+	out.Audit = append([]Event{}, s.state.Audit...)
+	for i := range out.Audit {
+		// Hide legacy credential-bearing entries without rewriting append-only history.
+		if out.Audit[i].Title == "Webhook created" {
+			out.Audit[i].Detail = "Webhook registered (destination redacted)"
+		}
+	}
 	out.RecordDeletions = nil
 	out.AccessKeys = append([]AccessKey{}, s.state.AccessKeys...)
 	for i := range out.AccessKeys {

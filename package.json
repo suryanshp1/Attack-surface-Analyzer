@@ -9,7 +9,7 @@
     "build": "next build --webpack",
     "start": "node scripts/start.mjs",
     "typecheck": "tsc --noEmit",
-    "test:web": "node --experimental-strip-types --test scripts/workspace-sync.test.mjs",
+    "test:web": "node --experimental-strip-types --test scripts/workspace-sync.test.mjs scripts/api-security.test.mjs scripts/assessment-views.test.mjs",
     "test:api": "cd backend && go test -race ./..."
   },
   "dependencies": {

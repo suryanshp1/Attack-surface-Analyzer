@@ -3,18 +3,12 @@ package main
 import (
 	"fmt"
 	"io"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-)
-
-var (
-	// idSegment matches alphanumeric IDs, hex strings, or UUIDs in URL paths
-	idSegment = regexp.MustCompile(`^[a-f0-9]{16,64}$|^[a-zA-Z0-9_\-]+_[a-zA-Z0-9_\-]+$`)
 )
 
 // Telemetry captures in-memory performance and reliability metrics.
@@ -58,24 +52,48 @@ func NewTelemetry() *Telemetry {
 	}
 }
 
-// NormalizeRoute collapses dynamic URL path segments to prevent unbounded metric cardinality.
+// Only known route shapes become labels. Unknown paths share one bucket, even
+// when an attacker varies short segments that resemble neither IDs nor UUIDs.
 func NormalizeRoute(rawPath string) string {
-	clean := strings.Trim(strings.TrimPrefix(rawPath, "/api/"), "/")
-	if clean == "" {
-		return "/"
+	clean := strings.Trim(rawPath, "/")
+	if strings.HasPrefix(clean, "internal/") {
+		switch clean {
+		case "internal/authorize", "internal/claim", "internal/complete", "internal/heartbeat", "internal/release", "internal/stage", "internal/tcp-authorize", "internal/watch":
+			return "/" + clean
+		}
+		return "/unknown"
+	}
+	clean = strings.TrimPrefix(clean, "api/")
+	switch clean {
+	case "health", "state", "me", "metrics", "events", "mcp", "reports.pdf", "settings", "targets", "scans", "assets", "findings", "endpoints", "history", "hazards", "takeovers", "members", "api-keys", "webhooks", "webhooks/test":
+		return "/" + clean
 	}
 	parts := strings.Split(clean, "/")
-	for i, part := range parts {
-		if idSegment.MatchString(part) || len(part) >= 16 {
-			parts[i] = ":id"
+	if len(parts) == 2 && parts[1] != "" {
+		switch parts[0] {
+		case "targets", "scans", "assets", "findings", "endpoints", "history", "hazards", "takeovers", "members":
+			return "/" + parts[0] + "/:id"
 		}
 	}
-	return "/" + strings.Join(parts, "/")
+	if len(parts) == 3 && parts[1] != "" {
+		if (parts[0] == "targets" && parts[2] == "verify") || (parts[0] == "scans" && (parts[2] == "retry" || parts[2] == "cancel")) || (parts[0] == "api-keys" && parts[2] == "revoke") {
+			return "/" + parts[0] + "/:id/" + parts[2]
+		}
+	}
+	return "/unknown"
 }
 
 // RecordRequest observes an HTTP request completion.
 func (t *Telemetry) RecordRequest(method, route string, statusCode int, duration time.Duration) {
 	normRoute := NormalizeRoute(route)
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+	default:
+		method = "OTHER"
+	}
+	if statusCode < 100 || statusCode > 599 {
+		statusCode = 500
+	}
 	statusClass := strconv.Itoa(statusCode/100) + "xx"
 	key := method + ":" + normRoute + ":" + statusClass
 

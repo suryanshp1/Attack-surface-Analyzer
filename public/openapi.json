@@ -3,7 +3,7 @@
   "info": {
     "title": "Surfacer API",
     "version": "0.2.0",
-    "description": "Use surf_key_ member keys as Bearer credentials through the web URL. Bootstrap browser session is HttpOnly. JSON writes are capped at 32 KiB. Request payload examples are in README.md."
+    "description": "Use surf_key_ member keys as Bearer credentials through the web URL, or sign in for an opaque HttpOnly browser session. Browser sessions expire after eight hours or 30 minutes idle and are revoked on logout or web-process restart. JSON writes are capped at 32 KiB (session sign-in: 2 KiB). Request payload examples are in README.md."
   },
   "servers": [
     {
@@ -13,6 +13,9 @@
   "security": [
     {
       "bearerAuth": []
+    },
+    {
+      "browserSession": []
     }
   ],
   "components": {
@@ -20,6 +23,12 @@
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer"
+      },
+      "browserSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "surfacer_session",
+        "description": "Opaque server-side session ID; never a workspace token or member API key."
       }
     }
   },
@@ -27,7 +36,7 @@
     "/state": {
       "get": {
         "summary": "Workspace snapshot",
-        "description": "Minimum role: viewer. This deployment contains one workspace. Scan snapshots include additive stage coverageStatus (finished, incomplete, unknown), issue and optional startedAt/finishedAt fields. coverage.http and coverage.detection contain finished/remaining counts when recorded; absent fields mean unknown for legacy runs. HTTP counts measure service origins; detection counts measure required service/template pairs for eligible services, not exhaustive asset coverage. coverage.serviceIssues contains up to 50 origin/reason records with serviceIssueCount for the total. Partial/failed scans include resume.fromStage, retainedStages, repeatedStages and checkpointPolicy. parentScanId links continued attempts. Existing execution status and progress semantics are unchanged.",
+        "description": "Minimum role: viewer. This deployment contains one workspace. Scan snapshots include additive stage coverageStatus (finished, incomplete, unknown), issue and optional startedAt/finishedAt fields. coverage.http and coverage.detection contain finished/remaining counts when recorded; absent fields mean unknown for legacy runs. HTTP counts measure service origins; detection counts measure required service/template pairs for eligible services, not exhaustive asset coverage. coverage.serviceIssues contains up to 50 origin/reason records with serviceIssueCount for the total. Partial/failed scans include resume.fromStage, retainedStages, repeatedStages and checkpointPolicy. parentScanId links continued attempts. Existing execution status and progress semantics are unchanged. Webhook URLs and legacy webhook-creation audit destinations are masked for every role; member key hashes are never returned.",
         "responses": {
           "200": {
             "description": "Success (creation endpoints return 201)"
@@ -594,7 +603,12 @@
           "413": {
             "description": "Request exceeds 32 KiB at web proxy"
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       },
       "get": {
         "summary": "MCP streaming method negotiation",
@@ -605,7 +619,12 @@
           "401": {
             "description": "Active member access key required"
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       },
       "delete": {
         "summary": "MCP session method negotiation",
@@ -619,13 +638,18 @@
           "401": {
             "description": "Active member access key required"
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/webhooks": {
       "get": {
         "summary": "List notification webhooks",
-        "description": "Minimum role: viewer. Returns configured delta notification endpoints.",
+        "description": "Minimum role: viewer. Returns webhook metadata with masked URL paths and query values for all roles, including owners. Use the saved ID for test and deletion.",
         "responses": {
           "200": {
             "description": "List of webhooks"
@@ -637,7 +661,7 @@
       },
       "post": {
         "summary": "Register a new notification webhook",
-        "description": "Minimum role: owner. Supports slack, discord, and generic webhook formats.",
+        "description": "Minimum role: owner. Supports slack, discord, and generic formats; at most 32 webhooks. Requires a public HTTPS URL on port 443 without user credentials or fragments. Delivery validates every resolved IP at dial time and rejects redirects, private/loopback/link-local destinations and environment proxies. Existing unsafe destinations remain stored but cannot deliver. Creation returns a masked URL.",
         "responses": {
           "201": {
             "description": "Webhook registered"
@@ -650,6 +674,9 @@
           },
           "403": {
             "description": "Role denied"
+          },
+          "409": {
+            "description": "Webhook limit reached"
           }
         }
       },
@@ -679,13 +706,19 @@
     "/webhooks/test": {
       "post": {
         "summary": "Dispatch a test payload to a webhook",
-        "description": "Minimum role: owner. Dispatches a non-blocking test event to the specified webhook.",
+        "description": "Minimum role: owner. Waits up to five seconds outside the workspace lock for test delivery. Accepts a saved id or a public HTTPS url. A supplied but missing id returns 404 without URL fallback. Applies the same destination policy as normal delivery. Errors never include destination credentials.",
         "responses": {
           "200": {
             "description": "Test notification delivered"
           },
           "502": {
             "description": "Target endpoint failed or timed out"
+          },
+          "400": {
+            "description": "Invalid body or URL policy violation"
+          },
+          "404": {
+            "description": "Saved webhook ID not found"
           }
         }
       }
@@ -1126,6 +1159,66 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/session": {
+      "post": {
+        "summary": "Create a browser session",
+        "security": [],
+        "description": "Web service only. Accepts the workspace bootstrap token or an active member key. Replaces the supplied browser session. Cookie is HttpOnly, SameSite=Strict and Secure on HTTPS; lifetime is eight hours with a server-enforced 30-minute idle timeout. One web process supports up to 1,000 sessions. Existing credential cookies require fresh sign-in.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session created; opaque surfacer_session cookie set"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid, expired or revoked credential"
+          },
+          "403": {
+            "description": "Invalid origin"
+          },
+          "413": {
+            "description": "Body exceeds 2 KiB"
+          },
+          "503": {
+            "description": "Authentication unavailable or session capacity reached"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Revoke a browser session",
+        "security": [],
+        "description": "Web service only. Revokes the supplied cookie session, aborts its active requests/streams, and clears the cookie. Does not revoke member API keys.",
+        "responses": {
+          "200": {
+            "description": "Session revoked and cookie cleared"
+          },
+          "403": {
+            "description": "Invalid origin"
           }
         }
       }

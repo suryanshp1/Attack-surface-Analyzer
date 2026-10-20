@@ -475,6 +475,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.stream(w, r)
 		return
 	}
+	if pathForRole == "webhooks/test" && r.Method == "POST" {
+		s.testWebhook(w, r)
+		return
+	}
 	if pathForRole == "reports.pdf" && r.Method == "GET" {
 		s.mu.Lock()
 		actor, authorized = s.actorLocked(r)
@@ -860,10 +864,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		result = p
 		mutated = true
 	case path == "webhooks" && r.Method == "GET":
-		result = s.state.Webhooks
-		if result == nil {
-			result = []NotificationWebhook{}
-		}
+		result = publicWebhooks(s.state.Webhooks)
 	case path == "webhooks" && r.Method == "POST":
 		var p struct {
 			URL                  string `json:"url"`
@@ -877,9 +878,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
-		u, err := url.Parse(p.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			fail(w, 400, "Enter a valid HTTP or HTTPS webhook URL.")
+		if err := validateWebhookURL(p.URL); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if len(s.state.Webhooks) >= 32 {
+			fail(w, 409, "Webhook limit reached")
 			return
 		}
 		whType := strings.ToLower(strings.TrimSpace(p.WebhookType))
@@ -918,8 +922,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:            now(),
 		}
 		s.state.Webhooks = append([]NotificationWebhook{wh}, s.state.Webhooks...)
-		s.audit("Webhook created", wh.WebhookType+" · "+wh.URL)
-		result = wh
+		s.audit("Webhook created", wh.WebhookType+" · "+wh.ID)
+		result = publicWebhooks([]NotificationWebhook{wh})[0]
 		status = 201
 		mutated = true
 	case path == "webhooks" && r.Method == "DELETE":
@@ -945,46 +949,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.audit("Webhook deleted", whID)
 		result = map[string]bool{"ok": true}
 		mutated = true
-	case path == "webhooks/test" && r.Method == "POST":
-		var p struct {
-			ID  string `json:"id"`
-			URL string `json:"url"`
-		}
-		_ = decode(w, r, &p)
-		var targetWH NotificationWebhook
-		if p.ID != "" {
-			for _, wh := range s.state.Webhooks {
-				if wh.ID == p.ID {
-					targetWH = wh
-					break
-				}
-			}
-		}
-		if targetWH.ID == "" && p.URL != "" {
-			targetWH = NotificationWebhook{
-				ID:          "test",
-				URL:         p.URL,
-				WebhookType: "generic",
-				Enabled:     true,
-			}
-		}
-		if targetWH.URL == "" {
-			fail(w, 400, "Specify an existing webhook id or url to test")
-			return
-		}
-		testPayload := WebhookPayload{
-			Event:     "test",
-			Title:     "Surfacer Webhook Test",
-			Detail:    "This is a test notification from Surfacer Attack Surface Management.",
-			Timestamp: now(),
-		}
-		dispatchCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		if err := DispatchWebhook(dispatchCtx, nil, targetWH, testPayload); err != nil {
-			fail(w, 502, "Webhook delivery failed: "+err.Error())
-			return
-		}
-		result = map[string]string{"status": "delivered"}
 	case len(parts) == 2 && parts[0] == "takeovers" && r.Method == "PATCH":
 		var p struct {
 			Status string `json:"status"`

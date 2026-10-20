@@ -4,11 +4,126 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 )
+
+func validateWebhookURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || len(raw) > 4096 || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || (u.Port() != "" && u.Port() != "443") {
+		return errors.New("webhooks require a public HTTPS URL on port 443 without user credentials or fragments")
+	}
+	if ip, err := netip.ParseAddr(u.Hostname()); err == nil && !publicIP(ip) {
+		return errors.New("webhook destination must be public")
+	}
+	return nil
+}
+
+// Pin each connection to the addresses checked here, including on subsequent
+// deliveries. A URL validation lookup alone would allow DNS rebinding.
+func dialWebhook(ctx context.Context, network, address string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port != "443" {
+		return nil, errors.New("invalid webhook address")
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return nil, errors.New("webhook DNS lookup failed")
+	}
+	for _, ip := range ips {
+		if !publicIP(ip) {
+			return nil, errors.New("webhook destination must be public")
+		}
+	}
+	for _, ip := range ips {
+		conn, dialErr := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		err = dialErr
+	}
+	return nil, err
+}
+
+func newWebhookClient() *http.Client {
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: dialWebhook, TLSHandshakeTimeout: 3 * time.Second,
+			ResponseHeaderTimeout: 4 * time.Second, DisableKeepAlives: true,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+func publicWebhooks(webhooks []NotificationWebhook) []NotificationWebhook {
+	out := make([]NotificationWebhook, 0, len(webhooks))
+	for _, wh := range webhooks {
+		u, err := url.Parse(wh.URL)
+		wh.URL = "[REDACTED]"
+		if err == nil && u.Hostname() != "" {
+			wh.URL = (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/[REDACTED]"}).String()
+		}
+		out = append(out, wh)
+	}
+	return out
+}
+
+func (s *Server) testWebhook(w http.ResponseWriter, r *http.Request) {
+	var p struct{ ID, URL string }
+	if !decode(w, r, &p) {
+		return
+	}
+	s.mu.Lock()
+	actor, authorized := s.actorLocked(r)
+	var wh NotificationWebhook
+	if authorized && actor.Role == "owner" {
+		for _, saved := range s.state.Webhooks {
+			if saved.ID == p.ID {
+				wh = saved
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+	if !authorized {
+		fail(w, 401, "Unauthorized")
+		return
+	}
+	if actor.Role != "owner" {
+		fail(w, 403, "Owner access required")
+		return
+	}
+	if p.ID != "" && wh.ID == "" {
+		fail(w, 404, "Webhook not found")
+		return
+	}
+	if p.ID == "" {
+		wh = NotificationWebhook{URL: p.URL, WebhookType: "generic"}
+	}
+	// Explicit test requests deliver even for disabled saved hooks.
+	wh.Enabled = true
+	if err := validateWebhookURL(wh.URL); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	payload := WebhookPayload{Event: "test", Title: "Surfacer Webhook Test", Detail: "This is a test notification from Surfacer Attack Surface Management.", Timestamp: now()}
+	if err := DispatchWebhook(ctx, nil, wh, payload); err != nil {
+		fail(w, 502, "Webhook delivery failed")
+		return
+	}
+	respond(w, 200, map[string]string{"status": "delivered"})
+}
 
 type WebhookPayload struct {
 	Event     string         `json:"event"`
@@ -103,7 +218,10 @@ func DispatchWebhook(ctx context.Context, client *http.Client, wh NotificationWe
 	}
 
 	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
+		client = newWebhookClient()
+	}
+	if err := validateWebhookURL(wh.URL); err != nil {
+		return err
 	}
 
 	var body any
@@ -130,7 +248,8 @@ func DispatchWebhook(ctx context.Context, client *http.Client, wh NotificationWe
 
 	res, err := client.Do(req)
 	if err != nil {
-		return err
+		// net/url errors include the full credential-bearing URL.
+		return errors.New("webhook connection failed")
 	}
 	defer res.Body.Close()
 
@@ -167,7 +286,7 @@ func (s *Server) dispatchWebhooksAsync(kind, title, detail, stamp string, webhoo
 		Timestamp: stamp,
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newWebhookClient()
 	for _, wh := range webhooks {
 		if !wh.Enabled {
 			continue

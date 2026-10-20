@@ -203,6 +203,7 @@ export type EndpointHazard = {
 };
 export type NotificationWebhook = {
   id: string;
+  // Display-only masked destination; delivery uses the stored URL by ID.
   url: string;
   webhookType: "slack" | "discord" | "generic";
   enabled: boolean;

@@ -1,15 +1,14 @@
 "use client";
 
-import { useState } from "react";
 import {
   Search,
-  TriangleAlert,
-  ShieldAlert,
   FileCode2,
-  ExternalLink,
 } from "lucide-react";
-import { dateTime, relative, type EndpointHazard } from "@/lib/types";
+import { dateTime, relative, exportCSV, type EndpointHazard } from "@/lib/types";
 import { BulkDeleteToolbar, SelectionCheckbox, useRecordSelection } from "@/components/record-selection";
+
+import { useWorkspaceFilter, useWorkspaceRoute, setWorkspaceQuery } from "@/lib/workspace-route";
+import { urlInScope } from "@/lib/domain-scope";
 
 export function HazardsView({
   hazards = [],
@@ -22,12 +21,13 @@ export function HazardsView({
   canDelete?: boolean;
   mutate?: (path: string, method: string, data?: unknown, message?: string) => Promise<boolean>;
 }) {
-  const [activeClass, setActiveClass] = useState<string>("all");
-  const [query, setQuery] = useState("");
+  const [requestedClass, setActiveClass] = useWorkspaceFilter("hazardClass", "all");
+  const activeClass = ["all", "ssrf_candidate", "redirect_candidate", "lfi_candidate", "sqli_candidate", "debug_flag", "sensitive_file"].includes(requestedClass) ? requestedClass : "all";
+  const { query } = useWorkspaceRoute();
+  const setQuery = setWorkspaceQuery;
 
   const scoped = hazards.filter((h) => {
-    if (scope !== "all" && !h.url.includes(scope)) return false;
-    return true;
+    return urlInScope(h.url, scope);
   });
 
   const filtered = scoped.filter((h) => {
@@ -51,6 +51,10 @@ export function HazardsView({
 
   return (
     <div className="space-y-4">
+      <button hidden id="export-hazards" onClick={() => exportCSV("hazards", [
+        ["Category", "Parameter / file", "URL", "Review priority", "Discovered"],
+        ...filtered.map(h => [h.hazardClass, h.parameter, h.url, h.severity, h.createdAt]),
+      ])}>Export hazards CSV</button>
       {/* Tab Filter Line */}
       <div className="tab-line" role="group" aria-label="Hazard class filter">
         {Object.keys(hazardLabels).map((key) => {
@@ -59,6 +63,7 @@ export function HazardsView({
             <button
               key={key}
               className={activeClass === key ? "tab-active" : ""}
+              aria-pressed={activeClass === key}
               onClick={() => setActiveClass(key)}
             >
               {hazardLabels[key]}
@@ -69,19 +74,20 @@ export function HazardsView({
       </div>
 
       {/* Search Bar */}
-      <div className="filter-bar flex items-center justify-between gap-4">
-        <div className="search-field relative flex-1">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
+      <div className="filter-bar">
+        <div className="table-search assessment-search">
+          <Search size={16} />
           <input
-            type="text"
-            className="w-full pl-9 pr-3 py-1.5 rounded-md border text-sm"
-            placeholder="Search crawled parameter hazard URLs or parameter keys…"
+            type="search"
+            aria-label="Search hazards"
+            placeholder="Search URL or parameter…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
       </div>
 
+      <p className="assessment-note">Review candidates only. Parameter names and file paths do not confirm an exploitable vulnerability.</p>
       {canDelete && mutate && <BulkDeleteToolbar key={selectionKey} selection={selection} resource="hazards" mutate={mutate} />}
       {/* Table / Empty State */}
       {filtered.length === 0 ? (
@@ -96,14 +102,14 @@ export function HazardsView({
         </div>
       ) : (
         <div className="table-wrap">
-          <table className="data-table responsive-table">
+          <table className="data-table responsive-table assessment-table">
             <thead>
               <tr>
                 {canDelete && mutate && <th className="selection-cell"><SelectionCheckbox label="Select all filtered hazards" checked={filtered.length > 0 && filtered.every(h => selection.selected.has(h.id))} mixed={selection.selected.size > 0 && selection.selected.size < filtered.length} onChange={() => selection.togglePage(filtered.map(h => h.id))} /></th>}
                 <th>Hazard Category</th>
                 <th>Parameter / File</th>
                 <th>Target Endpoint URL (Sanitized)</th>
-                <th>Severity</th>
+                <th>Review priority</th>
                 <th>Discovered</th>
               </tr>
             </thead>
@@ -113,20 +119,20 @@ export function HazardsView({
                 return (
                   <tr key={h.id}>
                     {canDelete && mutate && <td className="selection-cell" data-label="Select"><SelectionCheckbox label={`Select hazard: ${h.hazardClass} · ${h.url} · ${h.parameter}`} checked={selection.selected.has(h.id)} onChange={() => selection.toggle(h.id)} /></td>}
-                    <td>
+                    <td data-label="Category">
                       <span className="font-semibold text-xs px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">
                         {hazardLabels[h.hazardClass] || h.hazardClass}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Parameter / file">
                       <span className="font-mono text-xs font-bold text-amber-600 dark:text-amber-400">
                         {h.parameter}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Endpoint URL" className="mobile-full-cell">
                       <span className="font-mono text-xs opacity-85 break-all">{h.url}</span>
                     </td>
-                    <td>
+                    <td data-label="Review priority">
                       <span
                         className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${
                           isHigh
@@ -137,7 +143,7 @@ export function HazardsView({
                         {h.severity.toUpperCase()}
                       </span>
                     </td>
-                    <td className="text-xs opacity-75">
+                    <td data-label="Discovered" className="text-xs opacity-75">
                       <span title={dateTime(h.createdAt)}>{relative(h.createdAt)}</span>
                     </td>
                   </tr>

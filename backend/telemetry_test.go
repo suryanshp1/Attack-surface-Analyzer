@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,7 @@ func TestTelemetryBoundedCardinality(t *testing.T) {
 		{"/api/targets", "/targets"},
 		{"/api/targets/t_1234567890abcdef", "/targets/:id"},
 		{"/api/scans/4f8b2c1e9a3d4e5f6a7b8c9d0e1f2a3b", "/scans/:id"},
-		{"/api/scans/4f8b2c1e9a3d4e5f6a7b8c9d0e1f2a3b/stages/3", "/scans/:id/stages/3"},
+		{"/api/scans/4f8b2c1e9a3d4e5f6a7b8c9d0e1f2a3b/stages/3", "/unknown"},
 		{"/api/state", "/state"},
 		{"/api/metrics", "/metrics"},
 	}
@@ -95,5 +96,16 @@ func TestTelemetryConcurrency(t *testing.T) {
 	tel.WritePrometheus(&buf)
 	if !strings.Contains(buf.String(), `surfacer_http_requests_total{method="GET",path="/state",status_class="2xx"} 2000`) {
 		t.Errorf("Concurrency test failed, expected 2000 requests, got:\n%s", buf.String())
+	}
+}
+
+func TestTelemetryArbitraryPathsAndMethodsAreBounded(t *testing.T) {
+	tel := NewTelemetry()
+	for i := 0; i < 10000; i++ {
+		tel.RecordRequest(fmt.Sprintf("CUSTOM%d", i), fmt.Sprintf("/api/x%d", i), 404, time.Millisecond)
+		tel.RecordRequest("GET", fmt.Sprintf("/api/scans/short%d/unknown%d", i, i), 404, time.Millisecond)
+	}
+	if len(tel.httpRequests) != 2 || len(tel.latencySumMs) != 2 || len(tel.latencyCount) != 2 {
+		t.Fatalf("unbounded telemetry: requests=%d latencies=%d", len(tel.httpRequests), len(tel.latencyCount))
 	}
 }

@@ -40,6 +40,16 @@ The web port binds to loopback. Place an HTTPS reverse proxy in front of it for 
 
 Use the bootstrap owner to create individual members under **Settings → Access**. Viewers read; analysts scan and triage; owners manage scope, schedules, settings, and membership. Member keys are shown once, stored as hashes, expire within 1–90 days, and can be revoked. Initial keys expire after seven days. Disabling a member invalidates their keys. Use member keys for automation rather than sharing the bootstrap token.
 
+Browser cookies contain random session IDs, with credentials retained only in the web process. Sessions expire after eight hours or 30 minutes without an API request. Logout revokes that session and aborts its active requests and event streams; it does not revoke the member's automation key. Member key revocation and disabling still take effect at the API. The session store supports one web process, holds at most 1,000 sessions, and is cleared on web-service restart. Existing credential-based cookies require a fresh sign-in after upgrading. Multiple web replicas require a shared session store before deployment.
+
+## Notification webhooks
+
+Owners can register up to 32 Slack, Discord, or generic JSON webhooks. Destinations must use HTTPS on port 443, without URL user credentials or fragments. Every connection resolves and checks all returned addresses, rejects private/loopback/link-local destinations, and connects to a checked IP. Redirects and environment HTTP proxies are not used. Existing HTTP or private-network destinations remain stored but cannot deliver; replace them with public HTTPS endpoints. Webhooks are integrations separate from domain-scoped scanner traffic.
+
+All roles, including owners, receive masked webhook URLs in snapshots, event streams, and create/list responses. Test and delete saved hooks by ID. Paths and query values remain only in server-side storage for delivery. New audit entries omit destination URLs; legacy webhook-creation audit entries are masked in responses without rewriting stored append-only history. Backups still contain webhook credentials. Rotate integration credentials that may have been exposed to viewers before upgrading.
+
+Test delivery waits up to five seconds for the destination, outside the workspace lock. A missing saved ID returns 404 without falling back to a supplied URL. Delivery errors omit credential-bearing URLs. Report query filters and webhook deletion IDs are preserved by the web proxy.
+
 ## Health, reports, and API access
 
 ```sh
@@ -50,6 +60,8 @@ docker compose logs --tail=50 worker api gateway
 Authenticated routes include `/api/health`, `/api/state`, `/api/events` (SSE), and `/api/reports.pdf`. The route/role reference is served at `/openapi.json` and maintained in [public/openapi.json](../public/openapi.json). Complete request schemas and generated clients are still pending.
 
 Member API keys can be supplied as `Authorization: Bearer <member-key>`. Owners can read Prometheus metrics at `/api/metrics`; metrics omit target, member, and evidence labels. PDF reports support `targetId`, `severity`, and `status` filters and omit raw evidence and notes. CSV exports follow the active view filters.
+
+HTTP telemetry uses fixed route shapes and a shared unknown-route bucket, with bounded method/status labels. Arbitrary paths and HTTP methods cannot create additional metric series.
 
 ## Ownership verification
 

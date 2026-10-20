@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { timingSafeEqual, randomUUID } from "node:crypto";
+import { resolveBrowserSession } from "../../../lib/browser-session";
 export const dynamic = "force-dynamic";
 function equal(a: string, b: string) {
   return (
@@ -29,10 +30,11 @@ async function proxy(
     }
   }
   const workspaceToken = process.env.WORKSPACE_TOKEN;
-  const session = request.cookies.get("surfacer_session")?.value ?? "";
+  const session = resolveBrowserSession(request.cookies.get("surfacer_session")?.value ?? "");
+  const credential = session?.credential ?? "";
   const bearer = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
-  const owner = workspaceToken && equal(session,workspaceToken);
-  const userKey = /^surf_key_[a-f0-9]{64}$/.test(bearer) ? bearer : /^surf_key_[a-f0-9]{64}$/.test(session) ? session : "";
+  const owner = workspaceToken && equal(credential,workspaceToken);
+  const userKey = /^surf_key_[a-f0-9]{64}$/.test(bearer) ? bearer : /^surf_key_[a-f0-9]{64}$/.test(credential) ? credential : "";
   if (workspaceToken && !owner && !userKey) return Response.json({error:"Sign in to your workspace",auth:true},{status:401, headers: { "X-Request-ID": requestId }});
   const headers: Record<string,string> = {"Content-Type":"application/json", "X-Request-ID": requestId};
   const apiToken=owner || !workspaceToken ? process.env.API_TOKEN : userKey;
@@ -59,13 +61,13 @@ async function proxy(
   }
   try {
     const response = await fetch(
-      `${process.env.API_URL ?? "http://127.0.0.1:8080"}/api/${path.map(encodeURIComponent).join("/")}`,
+      `${process.env.API_URL ?? "http://127.0.0.1:8080"}/api/${path.map(encodeURIComponent).join("/")}${request.nextUrl.search}`,
       {
         method: request.method,
         headers,
         body,
         cache: "no-store",
-        signal: request.signal,
+        signal: session ? AbortSignal.any([request.signal, session.signal]) : request.signal,
       },
     );
     const returnedReqId = response.headers.get("X-Request-ID") || requestId;

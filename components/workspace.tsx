@@ -99,6 +99,15 @@ const navigation = [
   { name: "Changes", icon: Activity },
   { name: "Scan activity", icon: Radar },
 ] as const;
+const exportControls: Partial<Record<Page, string>> = {
+  Inventory: "export-inventory",
+  Endpoints: "export-endpoints",
+  Changes: "export-changes",
+  Hazards: "export-hazards",
+  Takeovers: "export-takeovers",
+  Governance: "export-governance",
+  Findings: "export-findings",
+};
 const severityOrder: Record<string, number> = {
   critical: 0,
   high: 1,
@@ -397,6 +406,7 @@ export default function Workspace() {
   const [state, setState] = useState<State | null>(null),
     [error, setError] = useState(""),
     [toast, setToast] = useState(""),
+    [toastError, setToastError] = useState(false),
     [mobile, setMobile] = useState(false),
     [modal, setModal] = useState<"target" | "scan" | "help" | null>(null),
     [notice, setNotice] = useState(false),
@@ -598,9 +608,11 @@ export default function Workspace() {
       }
       await api(path, method, data);
       await refresh();
+      setToastError(false);
       setToast(message);
       return true;
     } catch (e) {
+      setToastError(true);
       setToast((e as Error).message);
       await refresh();
       return false;
@@ -633,6 +645,11 @@ export default function Workspace() {
         </div>
       </div>
     );
+  const canManage = state.me?.role === "owner";
+  const canTriage = canManage || state.me?.role === "analyst";
+  const memberName = state.me?.name || "Workspace member";
+  const memberRole = state.me?.role || "viewer";
+  const initials = memberName.split(/\s+/).map(part => part[0]).slice(0, 2).join("").toUpperCase();
   const scopedAssets = state.assets.filter(
     (a) => scope === "all" || a.targetId === scope,
   );
@@ -767,10 +784,10 @@ export default function Workspace() {
             <ArrowUpRight size={14} />
           </button>
           <button className="profile" onClick={() => go("Settings")}>
-            <span className="avatar">WO</span>
+            <span className="avatar">{initials}</span>
             <span>
-              Workspace owner
-              <small>Local workspace</small>
+              {memberName}
+              <small>{memberRole.charAt(0).toUpperCase() + memberRole.slice(1)} · Local workspace</small>
             </span>
             <MoreHorizontal size={18} />
           </button>
@@ -806,7 +823,9 @@ export default function Workspace() {
                   if (
                     page !== "Inventory" &&
                     page !== "Findings" &&
-                    page !== "Endpoints"
+                    page !== "Endpoints" &&
+                    page !== "Takeovers" &&
+                    page !== "Hazards"
                   )
                     updateWorkspaceRoute({
                       page: "Inventory",
@@ -831,7 +850,7 @@ export default function Workspace() {
               aria-label="Account settings"
               onClick={() => go("Settings")}
             >
-              WO
+              {initials}
             </button>
           </div>
           {notice && (
@@ -948,6 +967,7 @@ export default function Workspace() {
                           ).length,
                         ]),
                       ]);
+                      setToastError(false);
                       setToast("Inventory report exported");
                     }}
                   >
@@ -966,7 +986,7 @@ export default function Workspace() {
                   </Button>
                   <Button
                     primary
-                    disabled={state.settings.paused}
+                    disabled={state.settings.paused || !canTriage}
                     onClick={() => setModal("scan")}
                   >
                     <Plus size={17} />
@@ -974,24 +994,22 @@ export default function Workspace() {
                   </Button>
                 </>
               ) : page === "Targets" ? (
-                <Button primary onClick={() => setModal("target")}>
+                <Button primary disabled={!canManage} onClick={() => setModal("target")}>
                   <Plus size={17} />
                   Add target
                 </Button>
               ) : page === "Settings" ? null : (
                 <Button
                   onClick={() => {
-                    document
-                      .getElementById(
-                        page === "Inventory"
-                          ? "export-inventory"
-                          : page === "Endpoints"
-                            ? "export-endpoints"
-                            : page === "Changes"
-                              ? "export-changes"
-                              : "export-findings",
-                      )
-                      ?.click();
+                    const exportID = exportControls[page];
+                    const control = exportID ? document.getElementById(exportID) : null;
+                    if (!control) {
+                      setToastError(true);
+                      setToast("Export is unavailable for this view. Refresh and try again.");
+                      return;
+                    }
+                    control.click();
+                    setToastError(false);
                     setToast("CSV exported");
                   }}
                 >
@@ -1090,6 +1108,7 @@ export default function Workspace() {
             <TakeoversView
               key={scope}
               canDelete={state.me?.role === "owner"}
+              canTriage={canTriage}
               takeovers={state.takeovers || []}
               scope={state.targets.find((t) => t.id === scope)?.domain || "all"}
               mutate={mutate}
@@ -1154,8 +1173,8 @@ export default function Workspace() {
         </main>
       </div>
       {toast && (
-        <div role="status" className="toast">
-          <Check size={18} />
+        <div role={toastError ? "alert" : "status"} className={`toast ${toastError ? "toast-error" : ""}`}>
+          {toastError ? <TriangleAlert size={18} /> : <Check size={18} />}
           <span>{toast}</span>
           <button
             aria-label="Dismiss notification"
@@ -1173,6 +1192,7 @@ export default function Workspace() {
             await refresh();
             setModal(null);
             setTarget(t);
+            setToastError(false);
             setToast(
               state.runtime?.verificationRequired
                 ? "Target added. Verify ownership to get started."
@@ -3231,6 +3251,7 @@ function SettingsPage({
   audit: State["audit"];
   mutate: Mutation;
 }) {
+  const canManage = access.me?.role === "owner";
   const [requestedTab, setTab] = useWorkspaceFilter("tab", "General");
   const tabs = ["General", "Scan controls", "Access", "MCP", "Webhooks", "Audit log"];
   const tab = tabs.includes(requestedTab) ? requestedTab : "General";
@@ -3257,7 +3278,7 @@ function SettingsPage({
       ) : tab === "MCP" ? (
         <MCPPanel onOpenAccess={() => setTab("Access")} />
       ) : tab === "Webhooks" ? (
-        <WebhooksPanel webhooks={access.webhooks || []} mutate={mutate} />
+        <WebhooksPanel webhooks={access.webhooks || []} mutate={mutate} canManage={canManage} />
       ) : tab === "Audit log" ? (
         <>
           <div className="section-title audit-intro">
@@ -3310,6 +3331,7 @@ function SettingsPage({
           className="settings-form"
           onSubmit={async (e) => {
             e.preventDefault();
+            if (!canManage) return;
             setBusy(true);
             await mutate("settings", "PATCH", form, "Workspace settings saved");
             setBusy(false);
@@ -3343,6 +3365,7 @@ function SettingsPage({
                     Workspace name
                     <input
                       className="text-input"
+                      disabled={!canManage || busy}
                       value={form.name}
                       minLength={2}
                       maxLength={60}
@@ -3358,7 +3381,7 @@ function SettingsPage({
                   </div>
                   <div className="settings-meta">
                     <span>Your role</span>
-                    <strong>{access.me?.role ?? "owner"}</strong>
+                    <strong>{access.me?.role ?? "Unavailable"}</strong>
                   </div>
                 </div>
               </div>
@@ -3374,6 +3397,7 @@ function SettingsPage({
                     type="number"
                     min={1}
                     max={365}
+                    disabled={!canManage || busy}
                     value={form.retention}
                     onChange={(e) =>
                       setForm({ ...form, retention: Number(e.target.value) })
@@ -3401,6 +3425,7 @@ function SettingsPage({
                       min={1}
                       max={30}
                       className="text-input"
+                      disabled={!canManage || busy}
                       value={form.rate}
                       onChange={(e) =>
                         setForm({ ...form, rate: Number(e.target.value) })
@@ -3415,6 +3440,7 @@ function SettingsPage({
                       min={1}
                       max={10}
                       className="text-input"
+                      disabled={!canManage || busy}
                       value={form.concurrency}
                       onChange={(e) =>
                         setForm({
@@ -3449,6 +3475,7 @@ function SettingsPage({
                   </div>
                   <button
                     type="button"
+                    disabled={!canManage || busy}
                     role="switch"
                     aria-checked={form.paused}
                     aria-label="Pause workspace scanning"
@@ -3462,12 +3489,12 @@ function SettingsPage({
               <div className="settings-section">
                 <div>
                   <h2>Built-in scope controls</h2>
-                  <p>These safeguards cannot be turned off.</p>
+                  <p>Scope and scanner safeguards are enforced by the API and gateway.</p>
                 </div>
                 <ul className="safety-list">
                   <li>
                     <Check size={16} />
-                    Ownership verification required
+                    {access.runtime?.verificationRequired !== false ? "DNS ownership verification required" : "DNS ownership verification optional"}
                   </li>
                   <li>
                     <Check size={16} />
@@ -3486,8 +3513,8 @@ function SettingsPage({
             </>
           )}
           <div className="settings-save">
-            <span>Changes apply to future scans.</span>
-            <Button primary type="submit" disabled={busy}>
+            <span>{canManage ? "Rate, concurrency, and retention changes apply to future scans; pausing stops active scans." : "Only owners can change workspace settings. Appearance is saved for this browser."}</span>
+            <Button primary type="submit" disabled={busy || !canManage}>
               {busy ? (
                 <Loader2 className="spin" size={16} />
               ) : (

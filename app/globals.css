@@ -4595,3 +4595,73 @@ textarea::placeholder {
   .stage-detail > .badge { max-width: none; white-space: normal; }
   .service-issues li { flex-direction: column; }
 }
+
+/* Supplemental assessment views follow the workspace's theme and table rules. */
+.assessment-note { color: var(--muted); font-size: 13px; line-height: 1.65; max-width: 78ch; }
+.assessment-error, .webhook-feedback-error { color: var(--critical); }
+.assessment-search { width: min(100%, 460px); min-width: 0; }
+.table-search:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }
+.assessment-table { table-layout: auto; min-width: 800px; }
+.assessment-table tbody tr { cursor: default; }
+.assessment-table th { white-space: nowrap; }
+.assessment-table .mobile-full-cell { min-width: 230px; }
+.assessment-host { display: flex; align-items: flex-start; gap: 8px; }
+.assessment-host > span { overflow-wrap: anywhere; min-width: 0; }
+.assessment-host .assessment-external { min-width: 44px; min-height: 44px; margin-top: -10px; }
+.assessment-timestamps > span { display: block; white-space: nowrap; }
+.assessment-actions .button { min-height: 44px; }
+.governance-view, .webhooks-panel { display: grid; gap: 24px; min-width: 0; }
+.governance-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.posture-card, .webhook-card { border: 1px solid var(--line); border-radius: 16px; padding: 22px; background: var(--surface-subtle); min-width: 0; }
+.posture-card header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 16px; }
+.posture-card h3, .governance-mx h3, .webhooks-panel h2 { display: flex; align-items: center; gap: 8px; }
+.posture-card h3, .governance-mx h3 { font-size: 14px; }
+.posture-card > p { color: var(--secondary-ink); font-size: 13px; line-height: 1.7; }
+.posture-success { border-top: 3px solid var(--success); }
+.posture-warning { border-top: 3px solid var(--warning); }
+.posture-critical { border-top: 3px solid var(--critical); }
+.dns-record { margin: 16px 0 0; padding: 12px; border-radius: 9px; background: var(--soft); color: var(--ink); font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mx-table { min-width: 560px; }
+.webhooks-panel { max-width: 1000px; }
+.webhooks-panel .audit-intro { margin-bottom: 0; }
+.webhooks-panel .audit-intro p { max-width: 70ch; }
+.webhook-card h3, .webhook-list-title { font-size: 15px; margin-bottom: 18px; }
+.webhook-fields { margin: 0; padding: 0; min-width: 0; border: 0; }
+.webhook-inputs { display: grid; grid-template-columns: minmax(0, 2fr) minmax(160px, 1fr); gap: 18px; }
+.webhook-inputs > label { display: grid; gap: 8px; min-width: 0; font-size: 13px; font-weight: 550; }
+.webhook-inputs .text-input { width: 100%; min-width: 0; min-height: 44px; margin: 0; }
+.webhook-triggers { margin: 20px 0; padding: 0; border: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 20px; }
+.webhook-triggers legend { margin-bottom: 8px; font-size: 13px; font-weight: 550; }
+.webhook-triggers label { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 13px; cursor: pointer; }
+.webhook-triggers input { width: 17px; height: 17px; accent-color: var(--ink); flex-shrink: 0; }
+.webhook-form-actions { display: flex; justify-content: flex-end; }
+.webhook-form-actions .button, .webhook-actions .button, .webhook-actions .icon-button { min-height: 44px; }
+.webhook-list { display: grid; gap: 14px; }
+.webhook-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.webhook-details { min-width: 0; }
+.webhook-badges { display: flex; flex-wrap: wrap; gap: 7px; }
+.webhook-destination { font-family: monospace; font-size: 13px; overflow-wrap: anywhere; margin-top: 12px; }
+.webhook-details .field-hint { margin: 6px 0 12px; }
+.webhook-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.webhook-feedback { margin-top: 16px; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.webhook-feedback-success { color: var(--success); }
+.webhook-delete-confirm { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.webhook-delete-confirm p { flex-basis: 100%; font-size: 13px; color: var(--muted); }
+@media (max-width: 1200px) {
+  .governance-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .assessment-table { min-width: 0; width: 100%; }
+  .assessment-table .mobile-full-cell { grid-column: 1 / -1; min-width: 0; }
+  .assessment-table .assessment-actions { grid-column: 1 / -1; }
+  .assessment-table td:has(.assessment-host) { padding-top: 4px; }
+  .webhook-inputs { grid-template-columns: 1fr; }
+  .webhook-row { flex-direction: column; }
+  .webhook-triggers { grid-template-columns: 1fr; }
+  .webhook-card { padding: 18px; }
+  .webhook-form-actions .button { width: 100%; }
+}
+.badge-critical { color: var(--critical); background: var(--critical-surface); }
+.webhooks-panel .audit-intro p { font-size: 13px; line-height: 1.65; }
+.toast-error { background: var(--critical-surface); color: var(--critical); border: 1px solid var(--critical); }
+.toast-error > button { color: var(--critical); }

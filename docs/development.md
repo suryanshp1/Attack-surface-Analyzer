@@ -23,10 +23,13 @@ Read [AGENTS.md](../AGENTS.md) before modifying Next.js code. This project uses 
 ```sh
 npm run typecheck
 npm run build
+npm run test:web
 npm run test:api
 ```
 
 The API command runs `go test -race ./...`. Native scanner and storage integration tests skip unless their explicit test environments are enabled. Unit and regression tests cover scope checks, private/rebinding destinations, permit expiry/tampering, lease recovery, stale-worker rejection, cancellation, triage, rollback, checkpoint retention, and conservative lifecycle behavior.
+
+The web tests exercise workspace synchronization and the actual API/session handlers with a mocked upstream and isolated session stores. They cover opaque cookies, logout and stream cancellation, idle/absolute expiry, credential rotation, backend member-key revocation, session capacity, origin checks, and forwarding of report filters and webhook deletion IDs. Assessment view tests cover hostname-boundary scope matching and URL filter round trips. Webhook API tests use isolated receivers; DNS/destination overrides remain in test files.
 
 For real scanner integration, build the separate Docker test target:
 
