@@ -4,12 +4,13 @@
 
 Self-hosted external attack surface monitoring for domains you manage. Discover hosts, ports, web services, endpoints, and exposed configuration; investigate evidence and track what changes between scans.
 
-[Quick start](#quick-start) · [Live preview](#live-app-preview) · [Architecture](#architecture) · [MCP access](#mcp-access) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
+[Quick start](#quick-start) · [Query filters](#query-filters) · [Live preview](#live-app-preview) · [Architecture](#architecture) · [MCP access](#mcp-access) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
 
 ## Why Surfacer
 
-- **Real observations:** nine open-source scanners feed a shared inventory with discovery provenance, service details, and TLS evidence.
+- **Real observations:** ten open-source scanning tools provide discovery provenance, service details, TLS evidence, and offline vulnerable JavaScript library detection.
 - **Investigation in one place:** filter assets and endpoints, inspect findings, review DNS posture and takeover candidates, record triage decisions, and export CSV or PDF reports.
+- **Visual query builder:** select fields, operators, and values; combine conditions in nested AND/OR groups; and switch to query text. Applied filters survive refresh and browser Back/Forward and can be shared through the URL.
 - **Record cleanup:** owners can select rows, a page, or all filtered results and delete findings, inventory, endpoints, finished scan history, hazards, and takeovers from active views. [Internal history is retained](docs/operations.md#delete-records-from-active-views).
 - **Recoverable scans:** bounded concurrency, workload-aware budgets, and durable checkpoints for completed port batches, crawl seeds, and detection services. Resume retries unfinished work.
 - **Live finding visibility:** findings publish into the workspace as each stage and detection batch commits, with consolidated stage logs.
@@ -49,6 +50,24 @@ docker compose down
 ```
 
 For configuration, HTTPS deployment, backups, scaling, and troubleshooting, see the [operations guide](docs/operations.md).
+
+## Query filters
+
+**Inventory**, **Endpoints**, **Findings**, **Takeovers**, **Hazards**, **Changes**, and **Scan activity** share a visual builder and query-text editor.
+
+1. Choose a field and operator, then select a suggested value or enter a custom value.
+2. Use **Add condition** and **Add group** to build filters. Each group matches **All conditions · AND** or **Any condition · OR**; **NOT** excludes a condition or group.
+3. Review the query preview and select **Apply**. Results and exports continue using the applied filter while you edit; incomplete conditions cannot be applied.
+
+For example, to find open critical or high findings, put **Status equals open** in an AND group and add an OR subgroup containing **Severity equals critical** and **Severity equals high**:
+
+```text
+status=open AND (severity=critical OR severity=high)
+```
+
+**Query text** edits the same filter, preserving grouping and values when switching modes. Numeric/date comparisons, missing-value checks, and free-text search are supported. **Clear** removes the filter; **Escape** restores the applied query; **⌘K / Ctrl+K** focuses the active filter editor. Applied queries are stored in the URL with target scope and pagination.
+
+Filters search loaded observations; they do not run scanners or establish assessment coverage. See the [query filter guide](docs/query-language.md) for field syntax, examples, limits, and older-link compatibility.
 
 ## Live app preview
 
@@ -101,7 +120,7 @@ flowchart LR
         S3[("MinIO evidence storage")]
     end
     subgraph Workers["Internal worker network"]
-        Worker["Go worker and nine scanners"]
+        Worker["Go worker and ten scanning tools"]
         Gateway["Scoped egress gateway"]
     end
     Public["In-scope public targets and allowed providers"]
@@ -137,7 +156,7 @@ Only the web service publishes a host port, bound to loopback by default. The wo
 
 Scanner versions and checksum verification live in [the downloader](scripts/fetch-scanners.py) and [the offline Retire.js downloader](scripts/fetch-retire.py). Nuclei runs a reviewed set of 16 signed templates pinned to `nuclei-templates v10.5.0`; it does not run the entire upstream catalog. See [scanning and coverage](docs/scanning.md) for scope, budgets, lifecycle rules, and recovery behavior.
 
-Scanners use bounded worker pools and shared gateway pacing. Egress plain HTTP requests and HTTPS tunnels are paced dynamically by the scan's signed permit rate and concurrency, while the gateway DNS relay forwards A, AAAA, TXT, CNAME, and MX queries. Nuclei groups curated templates by matching technology, runs up to three parallel worker subprocesses on batches of up to 50 URLs, streams scanner JSONL line by line, and skips dead hosts (`-mhe 5`) before exhausting budgets. Findings publish progressively as each stage or batch checkpoint commits.
+Scanners use bounded worker pools and shared gateway pacing. Egress plain HTTP requests and HTTPS tunnels are paced dynamically by the scan's signed permit rate and concurrency, while the gateway DNS relay forwards A, AAAA, TXT, CNAME, and MX queries. Nuclei groups curated templates by matching technology, runs up to three parallel worker subprocesses on batches of up to 50 URLs, streams scanner JSONL line by line, and skips dead hosts (`-mhe 3`) before exhausting budgets. Findings publish progressively as each stage or batch checkpoint commits.
 
 Incomplete stages and failed or skipped JavaScript downloads cannot establish clean coverage. Findings, removed assets, endpoints, and subdomain takeovers strictly require two consecutive clean, successful scans confirming absence before resolution. Use **Scan activity → Resume scan** to continue a failed or partial assessment from its earliest unfinished stage; reusable checkpoints survive, and the original run remains in history. Stage progress describes pipeline execution, not the percentage of assets assessed.
 
@@ -165,6 +184,7 @@ See [MCP integration](docs/mcp.md) for client configuration, tool arguments, res
 | [Architecture](docs/architecture.md) | Services, networks, scan flow, storage, and access model |
 | [Operations](docs/operations.md) | Configuration, deployment, backups, monitoring, and troubleshooting |
 | [Scanning and coverage](docs/scanning.md) | Scanner profiles, checkpoints, partial results, and lifecycle rules |
+| [Query filters](docs/query-language.md) | Visual field/operator/value controls, AND/OR groups, query syntax, examples, and shareable URLs |
 | [Development](docs/development.md) | Local setup, repository layout, and validation commands |
 | [API reference](public/openapi.json) | Routes and roles; served at `/openapi.json` |
 | [MCP integration](docs/mcp.md) | AI client setup, tools, filters, scan resume, authentication, and limits |
