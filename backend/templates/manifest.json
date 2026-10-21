@@ -88,7 +88,21 @@
       "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/misconfiguration/prometheus/prometheus-config.yaml",
       "technology": "Prometheus",
       "metadataOnly": true
+    },
+    {
+      "file": "springboot-mappings.yaml",
+      "sha256": "3aaf7551e82cd7257df1c16522ee79a3766fc9edd4c47b4c61d2ef014f40085b",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/misconfiguration/springboot/springboot-mappings.yaml",
+      "technology": "",
+      "metadataOnly": true
+    },
+    {
+      "file": "springboot-health.yaml",
+      "sha256": "0bacb85ab329efded84084cbf49579d85a8299622c8ab23ab993cdeee0c0144a",
+      "source": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/v10.5.0/http/misconfiguration/springboot/springboot-health.yaml",
+      "technology": "",
+      "metadataOnly": true
     }
   ],
-  "profile": "v10.5.0-curated-2"
+  "profile": "v10.5.0-curated-3"
 }

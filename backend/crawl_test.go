@@ -195,6 +195,9 @@ func TestParallelJavaScriptDownload(t *testing.T) {
 		{Host: "owned.example", URL: "http://owned.example", Endpoints: endpoints},
 	}}
 	w := Worker{scannerCommand: func(ctx context.Context, name string, args []string, proxy, dir string) ([]byte, string, error) {
+		if name == "retire" {
+			return cleanRetireOutput(args), "", nil
+		}
 		return []byte("[]"), "", nil
 	}}
 	claim := Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Rate: 20}}
@@ -255,6 +258,9 @@ func TestJavaScriptSecretsRedirectOrPartialFailureDoesNotBlockHost(t *testing.T)
 		{Host: "owned.example", URL: "http://owned.example", Endpoints: endpoints},
 	}}
 	w := Worker{scannerCommand: func(ctx context.Context, name string, args []string, proxy, dir string) ([]byte, string, error) {
+		if name == "retire" {
+			return cleanRetireOutput(args), "", nil
+		}
 		return []byte("[]"), "", nil
 	}}
 	claim := Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Rate: 20, Concurrency: 3, Checkpoint: Checkpoint{KnownSecrets: []Finding{{Host: "owned.example", Template: "gitleaks:fixture"}}}}}

@@ -59,7 +59,12 @@ func TestInterruptedWorkerCheckpointsBeforeReleasingLease(t *testing.T) {
 func TestKnownSecretCoverageRequiresTheOriginalFile(t *testing.T) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "clean") }))
 	defer proxy.Close()
-	w := Worker{scannerCommand: func(context.Context, string, []string, string, string) ([]byte, string, error) { return nil, "", nil }}
+	w := Worker{scannerCommand: func(_ context.Context, name string, args []string, _, _ string) ([]byte, string, error) {
+		if name == "retire" {
+			return cleanRetireOutput(args), "", nil
+		}
+		return nil, "", nil
+	}}
 	known := []Finding{{Host: "owned.example", Template: "gitleaks:checked", MatchedAt: "http://owned.example/app.js"}, {Host: "owned.example", Template: "gitleaks:unchecked", MatchedAt: "http://owned.example/old.js"}}
 	claim := Claim{Target: Target{Domain: "owned.example"}, Scan: Scan{Rate: 30, Concurrency: 1, Checkpoint: Checkpoint{KnownSecrets: known}}}
 	cp, _, err := w.analyzeJavaScript(context.Background(), claim, Checkpoint{Assets: []Asset{{Host: "owned.example", Endpoints: []Endpoint{{Kind: "JavaScript", URL: "http://owned.example/app.js"}}}}}, proxy.URL, t.TempDir())
@@ -105,7 +110,10 @@ func TestJavaScriptBudgetsDoNotCreditPartialFileCoverage(t *testing.T) {
 			for i := 0; i < tc.files; i++ {
 				cp.Assets[0].Endpoints = append(cp.Assets[0].Endpoints, Endpoint{Kind: "JavaScript", URL: fmt.Sprintf("http://owned.example/%d.js", i)})
 			}
-			worker := Worker{scannerCommand: func(_ context.Context, _ string, args []string, _, _ string) ([]byte, string, error) {
+			worker := Worker{scannerCommand: func(_ context.Context, name string, args []string, _, _ string) ([]byte, string, error) {
+				if name == "retire" {
+					return cleanRetireOutput(args), "", nil
+				}
 				files, e := os.ReadDir(args[1])
 				if e != nil {
 					return nil, "", e

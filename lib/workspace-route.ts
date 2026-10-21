@@ -52,10 +52,44 @@ export function parseWorkspaceRoute(hash: string): Route {
   params.forEach((value, key) => {
     if (!["target", "q", "detail"].includes(key)) filters[key] = value;
   });
+  const page = pages[path] ?? "Overview";
+  let query = params.get("q") || "";
+  const clauses: string[] = [];
+  const migrate = (key: string, field: string) => {
+    const value = filters[key];
+    if (value && value !== "all")
+      clauses.push(`${field}=${JSON.stringify(value)}`);
+    delete filters[key];
+  };
+  if (page === "Inventory") {
+    migrate("tech", "tech");
+    migrate("port", "port");
+    migrate("exposure", "exposure");
+  } else if (page === "Endpoints") migrate("kind", "kind");
+  else if (page === "Findings") {
+    migrate("findingStatus", "status");
+    migrate("severity", "severity");
+    if (filters.findingCategory === "security") {
+      clauses.push("security:true");
+      delete filters.findingCategory;
+    } else migrate("findingCategory", "category");
+  } else if (page === "Hazards") migrate("hazardClass", "class");
+  else if (page === "Takeovers") migrate("takeoverStatus", "status");
+  else if (page === "Scan activity") migrate("scanStatus", "status");
+  else if (page === "Changes") {
+    if (filters.changeKind === "finding") {
+      clauses.push("(kind:finding OR kind:resolved)");
+      delete filters.changeKind;
+    } else migrate("changeKind", "kind");
+  }
+  if (clauses.length)
+    query = [query ? `(${query})` : "", ...clauses]
+      .filter(Boolean)
+      .join(" AND ");
   return {
-    page: pages[path] ?? "Overview",
+    page,
     scope: params.get("target") || "all",
-    query: params.get("q") || "",
+    query,
     detail,
     filters,
   };
@@ -140,5 +174,5 @@ export function useWorkspaceFilter(
 }
 export function setWorkspaceQuery(query: string) {
   const route = parseWorkspaceRoute(window.location.hash);
-  updateWorkspaceRoute({ query, filters: { ...route.filters, p: "1" } }, true);
+  updateWorkspaceRoute({ query, filters: { ...route.filters, p: "1" } });
 }

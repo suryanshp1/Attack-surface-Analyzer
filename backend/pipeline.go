@@ -38,7 +38,7 @@ func scanStageBudget(ctx context.Context, sc Scan, stage int, cp Checkpoint) tim
 		}
 		wanted = min(20*time.Minute, max(wanted, time.Duration((services+workers-1)/workers)*25*time.Second))
 	case "Detection":
-		wanted = min(20*time.Minute, max(wanted, time.Duration(len(crawlSeeds(cp)))*14*4*time.Second/time.Duration(max(1, sc.Rate))))
+		wanted = min(20*time.Minute, max(wanted, time.Duration(len(crawlSeeds(cp)))*16*4*time.Second/time.Duration(max(1, sc.Rate))))
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		// Each downstream stage gets a chance to collect observations and commit.

@@ -28,6 +28,8 @@ type RuntimeInfo struct {
 	VerificationRequired bool `json:"verificationRequired"`
 }
 type Checkpoint struct {
+	KnownLibraries    []Finding           `json:"knownLibraries,omitempty"`
+	LibraryCoverage   map[string][]string `json:"libraryCoverage,omitempty"`
 	ProbeResults      map[string]string   `json:"probeResults,omitempty"`
 	DetectionRequired map[string][]string `json:"detectionRequired,omitempty"`
 	IncompleteStages  map[string]string   `json:"incompleteStages,omitempty"`
@@ -325,6 +327,9 @@ func (s *Server) makeScan(t Target, trigger string) Scan {
 	sc := newScan(t, trigger, s.state.Settings.Rate)
 	sc.Concurrency = s.state.Settings.Concurrency
 	for _, f := range s.state.Findings {
+		if f.TargetID == t.ID && strings.HasPrefix(f.Template, "retire:") {
+			sc.Checkpoint.KnownLibraries = append(sc.Checkpoint.KnownLibraries, Finding{Host: f.Host, Template: f.Template, MatchedAt: f.MatchedAt, Dependency: f.Dependency})
+		}
 		if f.TargetID == t.ID && strings.HasPrefix(f.Template, "gitleaks:") {
 			sc.Checkpoint.KnownSecrets = append(sc.Checkpoint.KnownSecrets, Finding{Host: f.Host, Template: f.Template, MatchedAt: f.MatchedAt})
 		}
@@ -783,6 +788,20 @@ func capString(s string, n int) string {
 	return s
 }
 func validateCheckpoint(cp Checkpoint, root string) error {
+	if len(cp.LibraryCoverage) > 100 || len(cp.KnownLibraries) > 2000 {
+		return errors.New("Dependency coverage exceeds limits")
+	}
+	for source, rules := range cp.LibraryCoverage {
+		if _, ok := scopedEndpoint(source, root); !ok || len(rules) > 2000 {
+			return errors.New("Dependency coverage escaped scope or exceeds limits")
+		}
+		for _, rule := range rules {
+			if len(rule) > 250 || !strings.HasPrefix(rule, "retire:") {
+				return errors.New("Invalid dependency coverage rule")
+			}
+		}
+	}
+
 	if err := validateServiceOutcomes(cp, root); err != nil {
 		return err
 	}
@@ -874,6 +893,14 @@ func validateCheckpoint(cp Checkpoint, root string) error {
 		}
 	}
 	for _, f := range cp.Findings {
+		if len(f.CVEs) > 20 || len(f.CWEs) > 20 || len(normalizedIDs(f.CVEs, cvePattern)) != len(f.CVEs) || len(normalizedIDs(f.CWEs, cwePattern)) != len(f.CWEs) || (f.CVSSScore != nil && validCVSSScore(f.CVSSScore) == nil) || (f.CVSSMetrics != "" && normalizedCVSSMetrics(f.CVSSMetrics) == "") {
+			return errors.New("Invalid vulnerability metadata")
+		}
+		if d := f.Dependency; d != nil {
+			if !componentPattern.MatchString(d.Name) || !componentVersionPattern.MatchString(d.Version) || len(d.Database) != 40 || (d.Detection != "filecontent" && d.Detection != "filecontentreplace" && d.Detection != "hash") {
+				return errors.New("Invalid dependency metadata")
+			}
+		}
 		if !inScope(f.Host, root) {
 			return errors.New("Finding escaped scope")
 		}
@@ -949,6 +976,15 @@ func (s *Server) maintenance() {
 }
 func (s *Server) normalize(sc *Scan, successful bool) {
 	stamp := now()
+	if successful {
+		s.recordSurfaceChanges(sc, stamp)
+	}
+	structuredPorts := map[string]bool{}
+	for _, event := range s.state.Events {
+		if event.Change != nil && event.Change.ScanID == sc.ID && event.Change.Field == "ports" {
+			structuredPorts[event.Change.Host] = true
+		}
+	}
 	for _, e := range sc.Checkpoint.History {
 		e.FirstSeen = stamp
 		e.LastSeen = stamp
@@ -1017,7 +1053,7 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 				if old.Removed {
 					s.emit("asset", "Asset returned", a.Host, stamp)
 				}
-				if strings.Join(intStrings(old.Ports), ",") != strings.Join(intStrings(a.Ports), ",") {
+				if !structuredPorts[a.Host] && strings.Join(intStrings(old.Ports), ",") != strings.Join(intStrings(a.Ports), ",") {
 					s.emit("port", "Ports changed", a.Host+" · "+strings.Join(intStrings(a.Ports), ", "), stamp)
 				}
 				s.state.Assets[i] = a
@@ -1053,7 +1089,10 @@ func (s *Server) normalize(sc *Scan, successful bool) {
 			if f.TargetID != sc.TargetID || f.Status != "open" || foundIDs[f.ID] || !contains(coverage[f.Host], f.Template) {
 				continue
 			}
-			if sc.Checkpoint.ServiceCoverage != nil && !strings.HasPrefix(f.Template, "tls-") && !strings.HasPrefix(f.Template, "gitleaks:") && !contains(sc.Checkpoint.ServiceCoverage[serviceOrigin(f.MatchedAt)], f.Template) {
+			if strings.HasPrefix(f.Template, "retire:") && !contains(sc.Checkpoint.LibraryCoverage[f.MatchedAt], f.Template) {
+				continue
+			}
+			if sc.Checkpoint.ServiceCoverage != nil && !strings.HasPrefix(f.Template, "tls-") && !strings.HasPrefix(f.Template, "gitleaks:") && !strings.HasPrefix(f.Template, "retire:") && !contains(sc.Checkpoint.ServiceCoverage[serviceOrigin(f.MatchedAt)], f.Template) {
 				continue
 			}
 			f.MissingScans++
@@ -1389,7 +1428,7 @@ func (s *Server) recountAssetFindings(targetID string) {
 }
 
 func (s *Server) emit(kind, title, detail, stamp string) {
-	s.state.Events = append([]Event{{id(), kind, title, detail, stamp, "Surfacer"}}, s.state.Events...)
+	s.state.Events = append([]Event{{ID: id(), Kind: kind, Title: title, Detail: detail, At: stamp, Actor: "Surfacer"}}, s.state.Events...)
 	s.dispatchWebhooksAsync(kind, title, detail, stamp, append([]NotificationWebhook{}, s.state.Webhooks...))
 }
 func contains(values []string, v string) bool {

@@ -62,6 +62,11 @@ export type Asset = {
   removed?: boolean;
 };
 export type Finding = {
+  cves?: string[];
+  cwes?: string[];
+  cvssScore?: number;
+  cvssMetrics?: string;
+  dependency?: { name: string; version: string; detection: string; database: string };
   id: string;
   matchedAt?: string;
   title: string;
@@ -143,6 +148,16 @@ export type Scan = {
   templateSet?: string;
 };
 export type Event = {
+  change?: {
+    targetId: string;
+    scanId: string;
+    previousScanId: string;
+    host: string;
+    origin?: string;
+    field: string;
+    before: string[];
+    after: string[];
+  };
   id: string;
   kind: string;
   title: string;

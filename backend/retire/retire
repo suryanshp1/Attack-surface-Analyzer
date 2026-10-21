@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/bin/node --max-old-space-size=128 /opt/surfacer/retire/scan.cjs "$@"

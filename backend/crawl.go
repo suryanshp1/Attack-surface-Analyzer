@@ -320,6 +320,7 @@ func parseCrawlOutput(cp Checkpoint, root string, output []byte) (Checkpoint, er
 	return cp, err
 }
 func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, proxy, dir string) (Checkpoint, string, error) {
+	cp.LibraryCoverage = map[string][]string{}
 	jsDir := filepath.Join(dir, "javascript")
 	if err := os.MkdirAll(jsDir, 0700); err != nil {
 		return cp, "", err
@@ -476,6 +477,7 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 		}
 		return cp, "No public JavaScript files available for secret analysis.", javascriptCoverageError(failed)
 	}
+	cp, dependencyLog, dependencyErr := w.analyzeDependencies(ctx, c, cp, sources, failed, jsDir, dir)
 	report := filepath.Join(dir, "gitleaks.json")
 	runner := command
 	if w.scannerCommand != nil {
@@ -483,7 +485,7 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 	}
 	_, logs, err := runner(ctx, "gitleaks", []string{"dir", jsDir, "--report-format", "json", "--report-path", report, "--redact=100", "--exit-code", "0", "--no-banner", "--no-color", "--log-level", "error", "--timeout", "60"}, "", dir)
 	if err != nil {
-		return cp, logs, err
+		return cp, dependencyLog + "\n" + logs, errors.Join(dependencyErr, err)
 	}
 	if w.scannerCommand != nil {
 		_ = os.WriteFile(report, []byte("[]"), 0600)
@@ -548,7 +550,7 @@ func (w *Worker) analyzeJavaScript(ctx context.Context, c Claim, cp Checkpoint, 
 			cp.Blocked = append(cp.Blocked, h)
 		}
 	}
-	return cp, fmt.Sprintf("Gitleaks analyzed %d public JS files (%d bytes); %d redacted potential credentials; no credential testing. %s", len(sources), total, len(rows), logs), javascriptCoverageError(failed)
+	return cp, fmt.Sprintf("Gitleaks analyzed %d public JS files (%d bytes); %d redacted potential credentials; no credential testing. %s", len(sources), total, len(rows), dependencyLog+"\n"+logs), errors.Join(dependencyErr, javascriptCoverageError(failed))
 }
 
 // Merge history only after actual successful crawl observations; partial runs retain old endpoints.

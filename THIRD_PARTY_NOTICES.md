@@ -20,6 +20,10 @@ The worker image bundles pinned releases from these upstream projects:
 
 [scripts/fetch-scanners.py](scripts/fetch-scanners.py) records versions and release sources, verifies checksums, and retrieves each scanner's license. The runtime image includes these files at `/usr/local/bin/<tool>.LICENSE` alongside the binaries. Preserve them when redistributing the image.
 
+## Offline JavaScript dependency analysis
+
+The worker ships the dependency-free Retire.js 6.1.0 static engine from the official npm release, with its Apache-2.0 license. Advisory data and NOTICE are pinned to upstream [RetireJS/retire.js](https://github.com/RetireJS/retire.js/tree/e5e228659bbcaea7ba85536a2ef8d4fb97b366e9). [scripts/fetch-retire.py](scripts/fetch-retire.py) verifies release integrity and per-file hashes. Engine/data licenses and NOTICE ship in `/opt/surfacer/retire/`. The wrapper uses the Node.js runtime from the official Node 22 image; its license and bundled notices ship at `/opt/surfacer/retire/NODE-LICENSE`. No additional npm dependency tree is installed in the worker.
+
 ## Detection templates
 
 The curated files in `backend/templates/` originate from upstream [nuclei-templates](https://github.com/projectdiscovery/nuclei-templates). The pinned upstream [MIT license](backend/templates/LICENSE.md) is included alongside them. Original source URLs, release, hashes, and technology gates are recorded in [manifest.json](backend/templates/manifest.json). Retain upstream attribution and applicable template notices when modifying or redistributing them.

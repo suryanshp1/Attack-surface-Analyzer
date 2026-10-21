@@ -12,7 +12,6 @@ import {
 import {
   Activity,
   ArrowDown,
-  ArrowDownLeft,
   ArrowRight,
   ArrowUpRight,
   Bell,
@@ -22,17 +21,16 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleHelp,
+  Compass,
   Clock3,
   Code2,
   Copy,
   Download,
   ExternalLink,
   FileText,
-  Fingerprint,
   Flame,
   Globe2,
   LayoutDashboard,
-  ListFilter,
   Loader2,
   LockKeyhole,
   Mail,
@@ -45,7 +43,6 @@ import {
   Settings2,
   Shield,
   ShieldCheck,
-  SlidersHorizontal,
   Sparkles,
   Square,
   Target as TargetIcon,
@@ -56,6 +53,13 @@ import {
   createWorkspaceSync,
   type ConnectionState,
 } from "@/lib/workspace-sync";
+import { QueryFilter } from "@/components/query-filter";
+import { compileQuery } from "@/lib/query-language";
+import { queryFields, assetDocument, findingDocument, endpointDocument, eventDocument, scanDocument } from "@/lib/query-fields";
+import { eventMatchesDomain, isSecurityFinding as isSecurityIssue } from "@/lib/overview-metrics";
+import { hostInScope } from "@/lib/domain-scope";
+import { OverviewDashboard } from "@/components/overview-dashboard";
+import { WorkspaceTour } from "@/components/workspace-tour";
 import { AppearanceControl } from "@/components/appearance";
 import {
   api,
@@ -116,8 +120,6 @@ const severityOrder: Record<string, number> = {
   none: 4,
   info: 5,
 };
-const isSecurityIssue = (finding: Finding) =>
-  !finding.category || ["vulnerability", "secret"].includes(finding.category);
 const activeScanStatus = (status: string) =>
   ["running", "queued", "retrying"].includes(status);
 const finishedScanStatus = (status: string) =>
@@ -410,6 +412,7 @@ export default function Workspace() {
     [mobile, setMobile] = useState(false),
     [modal, setModal] = useState<"target" | "scan" | "help" | null>(null),
     [notice, setNotice] = useState(false),
+    [tourOpen, setTourOpen] = useState(false),
     [auth, setAuth] = useState(false),
     [connection, setConnection] = useState<ConnectionState>("connecting"),
     [lastUpdate, setLastUpdate] = useState("");
@@ -487,7 +490,7 @@ export default function Workspace() {
     const keys = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        document.getElementById("global-search")?.focus();
+        document.getElementById("global-search")?.click();
       }
     };
     window.addEventListener("keydown", keys);
@@ -618,6 +621,13 @@ export default function Workspace() {
       return false;
     }
   };
+  const startTour = () => {
+    setModal(null);
+    setMobile(false);
+    setNotice(false);
+    setTourOpen(true);
+  };
+  const closeTour = useCallback(() => setTourOpen(false), []);
   const closeModal = useCallback(() => setModal(null), []),
     closeFinding = useCallback(closeWorkspaceDetail, []),
     closeAsset = useCallback(closeWorkspaceDetail, []),
@@ -653,24 +663,12 @@ export default function Workspace() {
   const scopedAssets = state.assets.filter(
     (a) => scope === "all" || a.targetId === scope,
   );
-  const scopedFindings = state.findings.filter(
-    (f) =>
-      scope === "all" ||
-      state.targets.find((t) => t.id === scope)?.domain === f.host ||
-      f.host.endsWith("." + state.targets.find((t) => t.id === scope)?.domain),
+  const scopeDomain = state.targets.find(target => target.id === scope)?.domain;
+  const scopedFindings = state.findings.filter(finding =>
+    scope === "all" || (!!scopeDomain && hostInScope(finding.host, scopeDomain)),
   );
-  const openFindings = scopedFindings.filter((f) => f.status === "open");
-  const openCritical = openFindings.filter(
-    (f) =>
-      isSecurityIssue(f) &&
-      (f.severity === "critical" || f.severity === "high"),
-  ).length;
-  const scopedEvents = state.events.filter(
-    (e) =>
-      scope === "all" ||
-      e.detail.includes(
-        state.targets.find((t) => t.id === scope)?.domain ?? "__missing__",
-      ),
+  const scopedEvents = state.events.filter(event =>
+    scope === "all" || (!!scopeDomain && eventMatchesDomain(event, scopeDomain)),
   );
   const liveFinding = state.findings.find((f) => f.id === findingID);
   const liveTarget = state.targets.find((t) => t.id === target?.id);
@@ -811,31 +809,15 @@ export default function Workspace() {
             <strong>{page}</strong>
           </div>
           <div className="topbar-right">
+            <button id="workspace-tour-launcher" className="icon-button" aria-label="Take a guided tour" title="Take a guided tour" onClick={startTour}>
+              <Compass size={19} />
+            </button>
             <AppearanceControl compact />
-            <div className="global-search">
-              <Search size={16} />
-              <input
-                id="global-search"
-                placeholder="Search your surface…"
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  if (
-                    page !== "Inventory" &&
-                    page !== "Findings" &&
-                    page !== "Endpoints" &&
-                    page !== "Takeovers" &&
-                    page !== "Hazards"
-                  )
-                    updateWorkspaceRoute({
-                      page: "Inventory",
-                      query: e.target.value,
-                    });
-                }}
-                aria-label="Search your surface"
-              />
-              <kbd>⌘ K</kbd>
-            </div>
+            <button className="global-search query-shortcut" id="global-search" onClick={() => {
+              const editor = document.querySelector<HTMLElement>('[data-query-focus]');
+              if (editor) editor.focus();
+              else { go("Inventory"); requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-query-focus]')?.focus()); }
+            }}><Search size={16} /><span>Query your surface</span><kbd>⌘ K</kbd></button>
 
             <button
               className={`icon-button notification-button ${notice ? "notification-active" : ""}`}
@@ -901,6 +883,7 @@ export default function Workspace() {
             lastUpdate={lastUpdate}
             refresh={refresh}
           />
+          <WorkspaceTour open={tourOpen} onStart={startTour} onClose={closeTour} />
           <div className="page-heading">
             <div>
               <h1>
@@ -1029,32 +1012,12 @@ export default function Workspace() {
             </div>
           )}
           {page === "Overview" && (
-            <Overview
+            <OverviewDashboard
               state={state}
-              assets={scopedAssets}
-              findings={scopedFindings}
               events={scopedEvents}
               scope={scope}
-              setScope={setScope}
-              openCritical={openCritical}
               go={go}
               selectFinding={setFindingID}
-              filterFindings={(severity) => {
-                go("Findings");
-                updateWorkspaceRoute(
-                  {
-                    filters: {
-                      ...route.filters,
-                      severity,
-                      findingStatus: "open",
-                      findingCategory: "security",
-                      p: "1",
-                    },
-                  },
-                  true,
-                );
-              }}
-              selectAsset={setAsset}
               run={() => setModal("scan")}
             />
           )}
@@ -1066,7 +1029,6 @@ export default function Workspace() {
               query={query}
               setQuery={setQuery}
               scope={scope}
-              setScope={setScope}
               select={setAsset}
               add={() => setModal("target")}
             />
@@ -1087,18 +1049,17 @@ export default function Workspace() {
           )}
           {page === "Findings" && (
             <Findings
-              key={JSON.stringify([scope, query, route.filters.findingStatus, route.filters.severity, route.filters.findingCategory])}
+              key={scope}
               canDelete={state.me?.role === "owner"}
               mutate={mutate}
               findings={scopedFindings}
               query={query}
-              setQuery={setQuery}
               select={setFindingID}
               clearScope={() =>
                 updateWorkspaceRoute({
                   scope: "all",
                   query: "",
-                  filters: { findingStatus: "all", severity: "all", p: "1" },
+                  filters: { p: "1" },
                 })
               }
               scopeName={state.targets.find((t) => t.id === scope)?.domain}
@@ -1230,6 +1191,9 @@ export default function Workspace() {
               Surfacer discovers and monitors external assets within each
               selected domain. DNS verification follows your workspace policy.
             </p>
+            <Button onClick={startTour}>
+              <Compass size={16} /> Take a guided tour
+            </Button>
             <h3>Start with your domain</h3>
             <p>
               Add a root domain, then start a scan. DNS verification is optional
@@ -1300,480 +1264,6 @@ export default function Workspace() {
   );
 }
 
-function Overview({
-  state,
-  assets,
-  findings,
-  events,
-  scope,
-  setScope,
-  openCritical,
-  go,
-  selectFinding,
-  selectAsset,
-  filterFindings,
-  run,
-}: {
-  state: State;
-  assets: Asset[];
-  findings: Finding[];
-  events: State["events"];
-  scope: string;
-  setScope: (s: string) => void;
-  openCritical: number;
-  go: (p: Page) => void;
-  selectFinding: (id: string) => void;
-  selectAsset: (a: Asset) => void;
-  filterFindings: (severity: string) => void;
-  run: () => void;
-}) {
-  const open = findings.filter(
-    (f) => f.status === "open" && isSecurityIssue(f),
-  );
-  const observations = findings.filter(
-    (f) => f.status === "open" && !isSecurityIssue(f),
-  ).length;
-  const resolved = findings.filter(
-    (f) => f.status === "resolved" && isSecurityIssue(f),
-  ).length;
-  const selectedTargets = state.targets.filter(
-    (t) => scope === "all" || t.id === scope,
-  );
-  const ready = selectedTargets.filter((t) => t.canScan).length;
-  const scans = state.scans
-    .filter((s) => scope === "all" || s.targetId === scope)
-    .slice()
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  const latest = scans[0];
-  const complete = scans.find((s) => s.status === "completed");
-  const assessmentProblem = selectedTargets
-    .map((t) => scans.find((s) => s.targetId === t.id))
-    .find((s) => s && s.status !== "completed");
-  const unassessed = selectedTargets.filter(
-    (t) => !scans.some((s) => s.targetId === t.id),
-  ).length;
-  const incomplete = !!assessmentProblem || unassessed > 0;
-  const observed = assets
-    .map((a) => a.lastSeen)
-    .filter(Boolean)
-    .sort()
-    .at(-1);
-  const recent = assets.filter(
-    (a) => a.firstSeen && Date.now() - Date.parse(a.firstSeen) < 86400000,
-  ).length;
-  const services = assets.reduce(
-    (n, a) => n + (a.services?.length || (a.url ? 1 : 0)),
-    0,
-  );
-  return (
-    <>
-      <div className="overview-toolbar freshness-row">
-        <span>
-          Latest attempt{" "}
-          <strong>
-            {latest ? relative(latest.startedAt) : "No scans yet"}
-          </strong>
-        </span>
-        <span>
-          Most recent completed scan{" "}
-          <strong>
-            {complete ? relative(complete.finishedAt) : "None yet"}
-          </strong>
-        </span>
-        <span>
-          Latest observation{" "}
-          <strong>{observed ? relative(observed) : "None yet"}</strong>
-        </span>
-      </div>
-      <div className="stats-grid">
-        <button className="stat" onClick={() => go("Inventory")}>
-          <div className="stat-label">
-            Discovered assets <Network size={17} />
-          </div>
-          <div className="stat-value">
-            {assets.length}
-            <span className="stat-change">
-              <ArrowUpRight size={13} />
-              {recent} added in 24h
-            </span>
-          </div>
-          <div className="stat-caption">
-            Across {scope === "all" ? ready : 1} scan-ready domains
-          </div>
-        </button>
-        <button className="stat" onClick={() => filterFindings("all")}>
-          <div className="stat-label">
-            Open security issues <Shield size={17} />
-          </div>
-          <div className="stat-value">
-            {open.length}
-            <span className="stat-change neutral">
-              <ArrowDownLeft size={13} />
-              {resolved} resolved
-            </span>
-          </div>
-          <div className="stat-caption">
-            {openCritical} high or critical · {observations} inventory
-            observations
-          </div>
-        </button>
-        <button className="stat" onClick={() => go("Changes")}>
-          <div className="stat-label">
-            Surface changes <Activity size={17} />
-          </div>
-          <div className="stat-value">
-            {events.length}
-            <span className="tiny-spark">
-              <svg
-                viewBox="0 0 100 32"
-                role="img"
-                aria-label="Recorded changes by day over the last 7 days"
-              >
-                <path d={eventSpark(events)} />
-              </svg>
-            </span>
-          </div>
-          <div className="stat-caption">All recorded changes · 7-day trend</div>
-        </button>
-        <button className="stat" onClick={() => go("Scan activity")}>
-          <div className="stat-label">
-            Ready to start a scan <Radar size={17} />
-          </div>
-          <div className="stat-value">
-            {ready}
-            <span className="stat-percent">
-              {ready === 1 ? "target" : "targets"}
-            </span>
-            <span className="coverage-dots">
-              {selectedTargets.map((t) => (
-                <i key={t.id} className={t.canScan ? "covered" : ""} />
-              ))}
-            </span>
-          </div>
-          <div className="stat-caption">
-            {selectedTargets.length - ready}{" "}
-            {selectedTargets.length - ready === 1 ? "target" : "targets"} not
-            ready to scan
-          </div>
-        </button>
-      </div>
-      <div
-        className={`attention-banner ${incomplete ? "assessment-warning" : ""}`}
-      >
-        <div className="attention-icon">
-          {incomplete ? <TriangleAlert size={25} /> : <Shield size={25} />}
-        </div>
-        <div>
-          <h2>
-            {incomplete
-              ? assessmentProblem &&
-                assessmentProblem.stages.length > 0 &&
-                assessmentProblem.stages.every((s) => s.status === "completed")
-                ? "Partial host coverage."
-                : "Assessment incomplete."
-              : !latest
-                ? "Start your first assessment."
-                : openCritical
-                  ? `${openCritical} high or critical findings to review.`
-                  : "No high or critical findings observed."}
-          </h2>
-          <p>
-            {assessmentProblem
-              ? (
-                  assessmentProblem.error || scanSummary(assessmentProblem)
-                ).replace("Assessment incomplete. ", "")
-              : unassessed > 0
-                ? `${unassessed} ${unassessed === 1 ? "target has" : "targets have"} no scan observations yet.`
-                : !latest
-                  ? "Add a target and run a scan to establish coverage."
-                  : `${open.length} open findings in this scope. Results reflect the bounded scan profile.`}
-          </p>
-        </div>
-        <Button
-          onClick={() =>
-            go(incomplete ? "Scan activity" : latest ? "Findings" : "Targets")
-          }
-        >
-          {incomplete
-            ? "Review assessment"
-            : latest
-              ? "Review findings"
-              : "Manage targets"}
-          <ArrowRight size={15} />
-        </Button>
-      </div>
-      <div className="overview-middle">
-        <section className="panel surface-panel">
-          <div className="section-title">
-            <div>
-              <h2>Surface by target</h2>
-              <p>Resolved hosts, observed services and open findings.</p>
-            </div>
-            <button className="text-action" onClick={() => go("Inventory")}>
-              Explore inventory <ArrowUpRight size={15} />
-            </button>
-          </div>
-          <SurfaceMap
-            assets={assets}
-            targets={state.targets.filter(
-              (t) => t.canScan && (scope === "all" || t.id === scope),
-            )}
-            select={selectAsset}
-          />
-          <div className="surface-legend">
-            <span>
-              <i className="legend-dot dot-dark" />
-              Observed web services <strong>{services}</strong>
-            </span>
-            <span>
-              <i className="legend-dot dot-gray" />
-              Scan-ready domains{" "}
-              <strong>
-                {scope === "all"
-                  ? ready
-                  : state.targets.filter((t) => t.id === scope && t.canScan)
-                      .length}
-              </strong>
-            </span>
-            <span>
-              <i className="legend-dot dot-blue" />
-              Exposed assets{" "}
-              <strong>{new Set(open.map((f) => f.host)).size}</strong>
-            </span>
-          </div>
-        </section>
-        <section className="panel priorities-panel">
-          <div className="section-title">
-            <div>
-              <h2>Finding breakdown</h2>
-              <p>Less noise. A clearer priority.</p>
-            </div>
-            <Shield size={19} className="muted" />
-          </div>
-          <div className="severity-breakdown">
-            {["critical", "high", "medium", "low"].map((sev) => {
-              const n = open.filter((f) => f.severity === sev).length;
-              return (
-                <button
-                  className="breakdown-row"
-                  key={sev}
-                  onClick={() => filterFindings(sev)}
-                >
-                  <Severity value={sev} />
-                  <span className="bar-track">
-                    <span
-                      style={{
-                        width: `${open.length ? (n / open.length) * 100 : 0}%`,
-                      }}
-                      className={`bar-fill bar-${sev}`}
-                    />
-                  </span>
-                  <strong>{n}</strong>
-                </button>
-              );
-            })}
-          </div>
-          <div className="breakdown-bottom">
-            <div>
-              <CheckCheck size={17} />
-              <span>{resolved} resolved</span>
-            </div>
-            <div>
-              <ShieldCheck size={17} />
-              <span>
-                {
-                  findings.filter(
-                    (f) =>
-                      f.status === "accepted risk" ||
-                      f.status === "false positive",
-                  ).length
-                }{" "}
-                triaged
-              </span>
-            </div>
-          </div>
-          <button className="panel-bottom-link" onClick={() => go("Findings")}>
-            View all findings <ArrowRight size={16} />
-          </button>
-        </section>
-      </div>
-      <div className="overview-lower">
-        <section>
-          <div className="section-title">
-            <div>
-              <h2>Needs attention</h2>
-              <p>The exposures to look at first.</p>
-            </div>
-            <button className="text-action" onClick={() => go("Findings")}>
-              View all <ArrowUpRight size={15} />
-            </button>
-          </div>
-          <div className="attention-list">
-            {open
-              .sort(
-                (a, b) => severityOrder[a.severity] - severityOrder[b.severity],
-              )
-              .slice(0, 3)
-              .map((f) => (
-                <button
-                  key={f.id}
-                  className="attention-row"
-                  onClick={() => selectFinding(f.id)}
-                >
-                  <span className={`finding-icon finding-icon-${f.severity}`}>
-                    <Shield size={18} />
-                  </span>
-                  <div>
-                    <strong>{f.title}</strong>
-                    <span>{f.host}</span>
-                  </div>
-                  <Severity value={f.severity} />
-                  <ChevronRight size={16} />
-                </button>
-              ))}
-            {!open.length && (
-              <Empty
-                title="No open findings."
-                description="Run a scan of a target to review its exposures."
-                action={<Button onClick={run}>Run a scan</Button>}
-              />
-            )}
-          </div>
-        </section>
-        <section>
-          <div className="section-title">
-            <div>
-              <h2>Latest changes</h2>
-              <p>Your surface never stands still.</p>
-            </div>
-            <button className="text-action" onClick={() => go("Changes")}>
-              View all <ArrowUpRight size={15} />
-            </button>
-          </div>
-          <div className="mini-feed">
-            {events.slice(0, 3).map((e) => (
-              <button key={e.id} onClick={() => go("Changes")}>
-                <span
-                  className={`feed-icon ${e.kind === "resolved" ? "feed-resolved" : ""}`}
-                >
-                  {e.kind === "resolved" ? (
-                    <Check size={15} />
-                  ) : e.kind === "asset" ? (
-                    <Plus size={15} />
-                  ) : (
-                    <Shield size={15} />
-                  )}
-                </span>
-                <div>
-                  <strong>{e.title}</strong>
-                  <span>{e.detail}</span>
-                </div>
-                <small>{relative(e.at)}</small>
-              </button>
-            ))}
-            {!events.length && (
-              <p className="empty-inline">
-                Changes appear after your first successful scan.
-              </p>
-            )}
-          </div>
-        </section>
-      </div>
-      <div className="quiet-callout">
-        <div>
-          <Fingerprint size={28} strokeWidth={1.4} />
-          <span>
-            <strong>Know your perimeter. Own your next move.</strong>
-            <p>
-              Selected domain scope. Open-source at the core. Your data stays
-              yours.
-            </p>
-          </span>
-        </div>
-        <button onClick={() => go("Targets")}>
-          Manage your scope <ArrowUpRight size={17} />
-        </button>
-      </div>
-    </>
-  );
-}
-
-function eventSpark(events: State["events"]) {
-  const bins = Array.from(
-    { length: 7 },
-    (_, i) =>
-      events.filter(
-        (e) =>
-          Math.floor((Date.now() - new Date(e.at).getTime()) / 86400000) ===
-          6 - i,
-      ).length,
-  );
-  const max = Math.max(1, ...bins);
-  return bins
-    .map(
-      (n, i) => `${i === 0 ? "M" : "L"}${1 + i * 16.3} ${27 - (n / max) * 23}`,
-    )
-    .join(" ");
-}
-
-function SurfaceMap({
-  assets,
-  targets,
-  select,
-}: {
-  assets: Asset[];
-  targets: Target[];
-  select: (asset: Asset) => void;
-}) {
-  return (
-    <div className="surface-summary">
-      {targets.map((target) => {
-        const hosts = assets.filter((a) => a.targetId === target.id);
-        const services = hosts.reduce(
-          (n, a) => n + (a.services?.length || (a.url ? 1 : 0)),
-          0,
-        );
-        const exposed = hosts.filter((a) => a.findings > 0);
-        const top = exposed.length ? exposed : hosts;
-        return (
-          <section className="surface-target" key={target.id}>
-            <h3>{target.domain}</h3>
-            <dl>
-              <div>
-                <dt>Resolved hosts</dt>
-                <dd>{hosts.length}</dd>
-              </div>
-              <div>
-                <dt>Web services observed</dt>
-                <dd>{services}</dd>
-              </div>
-              <div>
-                <dt>Hosts with findings</dt>
-                <dd>{exposed.length}</dd>
-              </div>
-            </dl>
-            {top.slice(0, 3).map((a) => (
-              <button key={a.id} onClick={() => select(a)}>
-                <span>{a.host}</span>
-                <span>
-                  {a.findings ? `${a.findings} findings` : probeLabel(a)}
-                  <ChevronRight size={14} />
-                </span>
-              </button>
-            ))}
-            {hosts.length > 3 && (
-              <p>{hosts.length - 3} more hosts in inventory</p>
-            )}
-          </section>
-        );
-      })}
-      {!targets.length && (
-        <p className="empty-inline">No targets in this scope.</p>
-      )}
-    </div>
-  );
-}
-
 function EndpointsPage({
   canDelete,
   mutate,
@@ -1793,7 +1283,6 @@ function EndpointsPage({
   run: () => void;
   selectAsset: (a: Asset) => void;
 }) {
-  const [kind, setKind] = useWorkspaceFilter("kind", "all");
   const [mode, setMode] = useWorkspaceFilter("mode", "live");
   const historical = mode === "historical";
   const live = assets.flatMap((a) =>
@@ -1804,17 +1293,12 @@ function EndpointsPage({
   const all = historical
     ? history.map((e) => ({ ...e, host: new URL(e.url).hostname }))
     : live;
-  const rows = all.filter(
-    (e) =>
-      (kind === "all" || e.kind === kind) &&
-      `${e.url} ${e.method} ${e.parameters.join(" ")}`
-        .toLowerCase()
-        .includes(query.toLowerCase()),
-  );
+  const compiled = compileQuery(query, queryFields.endpoints);
+  const rows = all.filter(e => compiled.matches(endpointDocument(e)));
   const { page, setPage, start } = useResultPage(rows.length);
-  const filtered = !!query || kind !== "all";
+  const filtered = !!query;
   const route = useWorkspaceRoute();
-  const selection = useRecordSelection(rows.map(e => e.id), JSON.stringify([route.scope, query, kind, mode]));
+  const selection = useRecordSelection(rows.map(e => e.id), JSON.stringify([route.scope, query, mode]));
   const visibleIDs = rows.slice(start, start + 25).map(e => e.id);
   const selectedOnPage = visibleIDs.filter(id => selection.selected.has(id)).length;
   return (
@@ -1825,7 +1309,6 @@ function EndpointsPage({
           className={!historical ? "tab-active" : ""}
           onClick={() => {
             setMode("live");
-            setKind("all");
           }}
         >
           Live observations <span>{live.length}</span>
@@ -1835,7 +1318,6 @@ function EndpointsPage({
           className={historical ? "tab-active" : ""}
           onClick={() => {
             setMode("historical");
-            setKind("all");
           }}
         >
           Historical · unverified <span>{history.length}</span>
@@ -1846,38 +1328,8 @@ function EndpointsPage({
           ? "Archived URLs from Wayback and Common Crawl. These are not proof of a currently reachable endpoint."
           : "URLs observed during bounded crawls. An error response or a discovered URL does not confirm a healthy service."}
       </p>
-      <div className="filter-bar">
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          placeholder="Search endpoint paths and parameter names…"
-        />
-        <select
-          className="filter-select"
-          aria-label="Endpoint type"
-          value={kind}
-          onChange={(e) => setKind(e.target.value)}
-        >
-          <option value="all">All endpoint types</option>
-          {[...new Set(all.map((e) => e.kind))].sort().map((k) => (
-            <option key={k}>{k}</option>
-          ))}
-        </select>
-        {filtered && (
-          <Button
-            onClick={() => {
-              setKind("all");
-              setQuery("");
-            }}
-          >
-            Clear filters
-          </Button>
-        )}
-        <span>
-          {rows.length} {historical ? "historical URLs" : "observed URLs"}
-        </span>
-      </div>
-      {canDelete && <BulkDeleteToolbar key={JSON.stringify([route.scope, query, kind, mode])} selection={selection} resource="endpoints" mutate={mutate} pageIDs={visibleIDs} />}
+      <QueryFilter view="endpoints" count={rows.length} />
+      {canDelete && <BulkDeleteToolbar key={JSON.stringify([route.scope, query, mode])} selection={selection} resource="endpoints" mutate={mutate} pageIDs={visibleIDs} />}
       {!rows.length ? (
         <Empty
           title={
@@ -1889,7 +1341,7 @@ function EndpointsPage({
           }
           description={
             filtered
-              ? "Clear the search and type filter to see collected endpoints."
+              ? "Clear the query to see collected endpoints."
               : historical
                 ? "Archived URLs appear after historical discovery completes."
                 : "Review scan coverage or start a crawl to collect endpoint observations."
@@ -1899,7 +1351,6 @@ function EndpointsPage({
               onClick={
                 filtered
                   ? () => {
-                      setKind("all");
                       setQuery("");
                     }
                   : run
@@ -2032,32 +1483,6 @@ function ScopeSelect({
     </select>
   );
 }
-function SearchField({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string;
-  onChange: (s: string) => void;
-  placeholder: string;
-}) {
-  return (
-    <div className="table-search">
-      <Search size={17} />
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        aria-label={placeholder}
-      />
-      {value && (
-        <button aria-label="Clear search" onClick={() => onChange("")}>
-          <X size={14} />
-        </button>
-      )}
-    </div>
-  );
-}
 function Inventory({
   mutate,
   state,
@@ -2065,7 +1490,6 @@ function Inventory({
   query,
   setQuery,
   scope,
-  setScope,
   select,
   add,
 }: {
@@ -2075,41 +1499,23 @@ function Inventory({
   query: string;
   setQuery: (s: string) => void;
   scope: string;
-  setScope: (s: string) => void;
   select: (a: Asset) => void;
   add: () => void;
 }) {
-  const [tech, setTech] = useWorkspaceFilter("tech", "all"),
-    [exposure, setExposure] = useWorkspaceFilter("exposure", "all"),
-    [port, setPort] = useWorkspaceFilter("port", "all"),
-    [sort, setSort] = useWorkspaceFilter("inventorySort", "host");
-  const techs = [
-    ...new Set(state.assets.flatMap((a) => a.technologies)),
-  ].sort();
-  const rows = assets
-    .filter(
-      (a) =>
-        (a.host + " " + a.ip + " " + a.technologies.join(" "))
-          .toLowerCase()
-          .includes(query.toLowerCase()) &&
-        (tech === "all" || a.technologies.includes(tech)) &&
-        (port === "all" || a.ports.includes(Number(port))) &&
-        (exposure === "all" ||
-          (exposure === "exposed"
-            ? state.findings.some(
-                (f) => f.host === a.host && f.status === "open",
-              )
-            : !state.findings.some(
-                (f) => f.host === a.host && f.status === "open",
-              ))),
-    )
+  const [sort, setSort] = useWorkspaceFilter("inventorySort", "host");
+  const compiled = compileQuery(query, queryFields.inventory);
+  const openByHost = new Map<string, number>();
+  for (const finding of state.findings) {
+    if (finding.status === "open") openByHost.set(finding.host, (openByHost.get(finding.host) ?? 0) + 1);
+  }
+  const rows = assets.filter(a => compiled.matches(assetDocument(a, openByHost.get(a.host) ?? 0)))
     .sort((a, b) =>
       sort === "risk"
         ? severityOrder[a.severity] - severityOrder[b.severity]
         : a.host.localeCompare(b.host),
     );
   const { page, setPage, start } = useResultPage(rows.length);
-  const selectionKey = JSON.stringify([scope, query, tech, exposure, port]);
+  const selectionKey = JSON.stringify([scope, query]);
   const selection = useRecordSelection(rows.map(a => a.id), selectionKey);
   const visibleIDs = rows.slice(start, start + 25).map(a => a.id);
   const selectedOnPage = visibleIDs.filter(id => selection.selected.has(id)).length;
@@ -2125,60 +1531,12 @@ function Inventory({
           Selected domain scope
         </span>
       </div>
+      <QueryFilter view="inventory" count={rows.length} />
       <div className="filter-bar">
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          placeholder="Search assets, IPs, technologies…"
-        />
-        <div className="filters">
-          <select
-            className="filter-select"
-            aria-label="Sort assets"
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
-          >
-            <option value="host">Hostname A–Z</option>
-            <option value="risk">Highest severity first</option>
-          </select>
-
-          <select
-            className="filter-select"
-            value={tech}
-            onChange={(e) => setTech(e.target.value)}
-            aria-label="Technology filter"
-          >
-            <option value="all">Technology</option>
-            {techs.map((t) => (
-              <option key={t}>{t}</option>
-            ))}
-          </select>
-          <select
-            className="filter-select"
-            value={port}
-            onChange={(e) => setPort(e.target.value)}
-            aria-label="Port filter"
-          >
-            <option value="all">Any port</option>
-            {[...new Set(state.assets.flatMap((a) => a.ports))]
-              .sort((a, b) => a - b)
-              .map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-          </select>
-          <select
-            className="filter-select"
-            value={exposure}
-            onChange={(e) => setExposure(e.target.value)}
-            aria-label="Exposure filter"
-          >
-            <option value="all">Exposure</option>
-            <option value="exposed">Has open findings</option>
-            <option value="clear">No open findings</option>
-          </select>
-        </div>
+        <span>{rows.length} {rows.length === 1 ? "asset" : "assets"}</span>
+        <select className="filter-select" aria-label="Sort assets" value={sort} onChange={e => setSort(e.target.value)}>
+          <option value="host">Hostname A–Z</option><option value="risk">Highest severity first</option>
+        </select>
       </div>
       {canDelete && <BulkDeleteToolbar key={selectionKey} selection={selection} resource="assets" mutate={mutate} pageIDs={visibleIDs} />}
       <div className="table-wrap">
@@ -2295,11 +1653,7 @@ function Inventory({
                 onClick={
                   assets.length
                     ? () => {
-                        setTech("all");
-                        setExposure("all");
-                        setPort("all");
                         setQuery("");
-                        setScope("all");
                       }
                     : add
                 }
@@ -2346,7 +1700,6 @@ function Findings({
   mutate,
   findings,
   query,
-  setQuery,
   select,
   clearScope,
   scopeName,
@@ -2355,94 +1708,15 @@ function Findings({
   mutate: Mutation;
   findings: Finding[];
   query: string;
-  setQuery: (s: string) => void;
   select: (id: string) => void;
   clearScope: () => void;
   scopeName?: string;
 }) {
-  const [status, setStatus] = useWorkspaceFilter("findingStatus", "open"),
-    [severity, setSeverity] = useWorkspaceFilter("severity", "all");
-  const [category, setCategory] = useWorkspaceFilter(
-    "findingCategory",
-    "security",
-  );
   const [sort, setSort] = useWorkspaceFilter("findingSort", "priority"),
     [group, setGroup] = useWorkspaceFilter("findingGroup", "none");
 
-  const categories = [
-    {
-      id: "security",
-      label: "Security issues",
-      count: findings.filter(isSecurityIssue).length,
-    },
-    { id: "all", label: "All discoveries", count: findings.length },
-    {
-      id: "vulnerability",
-      label: "Vulnerabilities",
-      count: findings.filter(
-        (f) => !f.category || f.category === "vulnerability",
-      ).length,
-    },
-    {
-      id: "port",
-      label: "Open Ports & Services",
-      count: findings.filter((f) => f.category === "port").length,
-    },
-    {
-      id: "endpoint",
-      label: "Endpoints & Routes",
-      count: findings.filter((f) => f.category === "endpoint").length,
-    },
-    {
-      id: "hazard",
-      label: "Parameter Hazards",
-      count: findings.filter((f) => f.category === "hazard").length,
-    },
-    {
-      id: "secret",
-      label: "Exposed Secrets",
-      count: findings.filter((f) => f.category === "secret").length,
-    },
-    {
-      id: "host",
-      label: "Discovered Hosts",
-      count: findings.filter((f) => f.category === "host").length,
-    },
-  ];
-
-  const rows = findings
-    .filter(
-      (f) =>
-        (status === "all" || f.status === status) &&
-        (severity === "all" || f.severity === severity) &&
-        (category === "all" ||
-          (category === "security"
-            ? isSecurityIssue(f)
-            : category === "vulnerability"
-              ? !f.category || f.category === "vulnerability"
-              : f.category === category)) &&
-        (
-          f.title +
-          " " +
-          f.host +
-          " " +
-          f.template +
-          " " +
-          (f.matchedAt || "") +
-          " " +
-          (f.ip || "") +
-          " " +
-          (f.port ? String(f.port) : "") +
-          " " +
-          (f.parameters?.join(" ") || "") +
-          " " +
-          (f.technologies?.join(" ") || "") +
-          " " +
-          (f.stageName || "")
-        )
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-    )
+  const compiled = compileQuery(query, queryFields.findings);
+  const rows = findings.filter(f => compiled.matches(findingDocument(f, isSecurityIssue(f))))
     .sort((a, b) => {
       if (group === "template" && a.template !== b.template)
         return a.template.localeCompare(b.template);
@@ -2461,7 +1735,7 @@ function Findings({
   const { page, setPage, start } = useResultPage(rows.length);
   const visible = rows.slice(start, start + 25);
   const route = useWorkspaceRoute();
-  const selection = useRecordSelection(rows.map(f => f.id), JSON.stringify([route.scope, query, status, severity, category]));
+  const selection = useRecordSelection(rows.map(f => f.id), JSON.stringify([route.scope, query]));
   const visibleIDs = visible.map(f => f.id);
   const selectedOnPage = visibleIDs.filter(id => selection.selected.has(id)).length;
   return (
@@ -2479,57 +1753,8 @@ function Findings({
         inventory observations. Parameter hazards are candidates, not confirmed
         vulnerabilities.
       </p>
-      <div className="tab-line finding-category-tabs">
-        {categories.map((c) => (
-          <button
-            key={c.id}
-            aria-pressed={category === c.id}
-            onClick={() => setCategory(c.id)}
-            className={category === c.id ? "tab-active" : ""}
-          >
-            {c.label}
-            <span>{c.count}</span>
-          </button>
-        ))}
-      </div>
-      <div className="tab-line finding-tabs">
-        {["open", "accepted risk", "false positive", "resolved", "all"].map(
-          (s) => (
-            <button
-              key={s}
-              aria-pressed={status === s}
-              onClick={() => setStatus(s)}
-              className={status === s ? "tab-active" : ""}
-            >
-              {s === "all"
-                ? "All findings"
-                : s.charAt(0).toUpperCase() + s.slice(1)}
-              <span>
-                {findings.filter((f) => s === "all" || f.status === s).length}
-              </span>
-            </button>
-          ),
-        )}
-      </div>
+      <QueryFilter view="findings" count={rows.length} />
       <div className="filter-bar">
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          placeholder="Search findings, ports, routes, hosts, params, tech…"
-        />
-        <select
-          className="filter-select"
-          aria-label="Severity filter"
-          value={severity}
-          onChange={(e) => setSeverity(e.target.value)}
-        >
-          <option value="all">All severities</option>
-          {["critical", "high", "medium", "low", "info"].map((s) => (
-            <option value={s} key={s}>
-              {s.charAt(0).toUpperCase() + s.slice(1)}
-            </option>
-          ))}
-        </select>
         <select
           className="filter-select"
           aria-label="Sort findings"
@@ -2705,7 +1930,7 @@ function Findings({
                 onClick={() => {
                   updateWorkspaceRoute({
                     query: "",
-                    filters: { findingStatus: "all", severity: "all", p: "1" },
+                    filters: { p: "1" },
                   });
                   if (!findings.length && scopeName) clearScope();
                 }}
@@ -2730,34 +1955,12 @@ function Findings({
 }
 
 function Changes({ events }: { events: State["events"] }) {
-  const [filter, setFilter] = useWorkspaceFilter("changeKind", "all");
-  const rows = events.filter(
-    (e) =>
-      filter === "all" ||
-      (filter === "finding"
-        ? e.kind === "finding" || e.kind === "resolved"
-        : e.kind === filter),
-  );
+  const { query } = useWorkspaceRoute();
+  const compiled = compileQuery(query, queryFields.changes);
+  const rows = events.filter(e => compiled.matches(eventDocument(e)));
   return (
     <>
-      <div className="tab-line">
-        {[
-          { value: "all", label: "All changes" },
-          { value: "asset", label: "Assets" },
-          { value: "finding", label: "Findings" },
-          { value: "port", label: "Ports" },
-          { value: "certificate", label: "Certificates" },
-        ].map((f) => (
-          <button
-            key={f.value}
-            aria-pressed={filter === f.value}
-            onClick={() => setFilter(f.value)}
-            className={filter === f.value ? "tab-active" : ""}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
+      <QueryFilter view="changes" count={rows.length} />
       <button
         id="export-changes"
         className="sr-only"
@@ -2810,6 +2013,14 @@ function Changes({ events }: { events: State["events"] }) {
                   </Badge>
                 </div>
                 <p>{e.detail}</p>
+                {e.change && (
+                  <dl className="detail-grid" aria-label="Observation changes">
+                    <div><dt>Before</dt><dd>{e.change.before.join(", ")}</dd></div>
+                    <div><dt>After</dt><dd>{e.change.after.join(", ")}</dd></div>
+                    <div><dt>Service / host</dt><dd>{e.change.origin || e.change.host}</dd></div>
+                    <div><dt>Compared scans</dt><dd><code>{e.change.previousScanId}</code> → <code>{e.change.scanId}</code></dd></div>
+                  </dl>
+                )}
                 <span className="change-meta">
                   {e.actor} · {dateTime(e.at)}
                 </span>
@@ -3110,42 +2321,19 @@ function Scans({
   select: (s: Scan) => void;
   run: () => void;
 }) {
-  const [filter, setFilter] = useWorkspaceFilter("scanStatus", "all");
   const route = useWorkspaceRoute();
+  const compiled = compileQuery(route.query, queryFields.scans);
   const rows = scans
-    .filter((s) => filter === "all" || s.status === filter)
+    .filter(s => compiled.matches(scanDocument(s)))
     .slice()
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const { page, setPage, start } = useResultPage(rows.length);
-  const selectionKey = JSON.stringify([route.scope, filter]);
+  const selectionKey = JSON.stringify([route.scope, route.query]);
   const selection = useRecordSelection(rows.filter(s => finishedScanStatus(s.status)).map(s => s.id), selectionKey);
   const visibleIDs = rows.slice(start, start + 25).filter(s => finishedScanStatus(s.status)).map(s => s.id);
   return (
     <>
-      <div className="tab-line">
-        {[
-          "all",
-          "queued",
-          "running",
-          "retrying",
-          "completed",
-          "partial",
-          "failed",
-          "canceled",
-        ].map((f) => (
-          <button
-            key={f}
-            aria-pressed={filter === f}
-            className={filter === f ? "tab-active" : ""}
-            onClick={() => setFilter(f)}
-          >
-            {f === "all" ? "All scans" : statusLabel(f)}
-            <span>
-              {scans.filter((s) => f === "all" || s.status === f).length}
-            </span>
-          </button>
-        ))}
-      </div>
+      <QueryFilter view="scans" count={rows.length} />
       {canDelete && <>
         <BulkDeleteToolbar key={selectionKey} selection={selection} resource="scans" mutate={mutate} pageIDs={visibleIDs} />
         <div className="bulk-page-selection"><SelectionCheckbox label="Select all finished scans on this page" checked={visibleIDs.length > 0 && visibleIDs.every(id => selection.selected.has(id))} mixed={visibleIDs.some(id => selection.selected.has(id)) && !visibleIDs.every(id => selection.selected.has(id))} onChange={() => selection.togglePage(visibleIDs)} /><span>Select finished scans on this page. Active scans cannot be deleted.</span></div>
@@ -3210,22 +2398,22 @@ function Scans({
       {!rows.length && (
         <Empty
           title={
-            filter === "all"
+            !route.query
               ? "No scans recorded."
-              : "No scans with this status."
+              : "No scans match this query."
           }
           description={
-            filter === "all"
+            !route.query
               ? "Start a scan to follow discovery, probing and detection."
-              : "Choose All scans to review existing assessments and recovery options."
+              : "Clear the query to review existing assessments and recovery options."
           }
           action={
             <Button
               primary
-              onClick={filter === "all" ? run : () => setFilter("all")}
+              onClick={!route.query ? run : () => setWorkspaceQuery("")}
             >
               <Plus size={16} />
-              {filter === "all" ? "Run a scan" : "View all scans"}
+              {!route.query ? "Run a scan" : "View all scans"}
             </Button>
           }
         />
@@ -4023,6 +3211,12 @@ function FindingDetail({
         </div>
         <h3>Why this matched</h3>
         <p>{finding.description}</p>
+        {finding.dependency && (
+          <p className="field-hint">
+            Observed library: {finding.dependency.name} {finding.dependency.version} · {finding.dependency.detection}.
+            Advisory snapshot: <code>{finding.dependency.database}</code>. Exploit reachability has not been tested.
+          </p>
+        )}
         <h3>How to fix it</h3>
         <p>{finding.remediation}</p>
       </div>
@@ -4075,6 +3269,14 @@ function FindingDetail({
         <div>
           <dt>Last seen</dt>
           <dd>{dateTime(finding.lastSeen)}</dd>
+        </div>
+        <div>
+          <dt>Vulnerability identifiers</dt>
+          <dd>{[...(finding.cves ?? []), ...(finding.cwes ?? [])].join(", ") || "Not supplied"}</dd>
+        </div>
+        <div>
+          <dt>CVSS supplied by scanner</dt>
+          <dd>{finding.cvssScore !== undefined ? finding.cvssScore.toFixed(1) : "Not supplied"}{finding.cvssMetrics && <><br /><code>{finding.cvssMetrics}</code></>}</dd>
         </div>
         <div>
           <dt>Evidence handling</dt>

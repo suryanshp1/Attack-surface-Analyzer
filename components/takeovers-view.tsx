@@ -4,7 +4,6 @@ import { useState } from "react";
 import { BulkDeleteToolbar, SelectionCheckbox, useRecordSelection } from "@/components/record-selection";
 import {
   Flame,
-  Search,
   ExternalLink,
   ShieldCheck,
 } from "lucide-react";
@@ -16,7 +15,10 @@ import {
   type SubdomainTakeover,
 } from "@/lib/types";
 
-import { useWorkspaceFilter, useWorkspaceRoute, setWorkspaceQuery } from "@/lib/workspace-route";
+import { useWorkspaceRoute } from "@/lib/workspace-route";
+import { QueryFilter } from "@/components/query-filter";
+import { compileQuery } from "@/lib/query-language";
+import { queryFields, takeoverDocument } from "@/lib/query-fields";
 import { hostInScope } from "@/lib/domain-scope";
 
 export function TakeoversView({
@@ -32,10 +34,7 @@ export function TakeoversView({
   canDelete?: boolean;
   canTriage?: boolean;
 }) {
-  const [requestedFilter, setFilter] = useWorkspaceFilter("takeoverStatus", "all");
-  const filter = ["all", "open", "suppressed", "resolved"].includes(requestedFilter) ? requestedFilter : "all";
   const { query } = useWorkspaceRoute();
-  const setQuery = setWorkspaceQuery;
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -43,18 +42,10 @@ export function TakeoversView({
     return hostInScope(t.subdomain, scope);
   });
 
-  const filtered = scoped.filter((t) => {
-    if (filter !== "all" && t.status !== filter) return false;
-    if (!query) return true;
-    const q = query.toLowerCase();
-    return (
-      t.subdomain.toLowerCase().includes(q) ||
-      t.cname.toLowerCase().includes(q) ||
-      t.serviceProvider.toLowerCase().includes(q)
-    );
-  });
+  const compiled = compileQuery(query, queryFields.takeovers);
+  const filtered = scoped.filter(row => compiled.matches(takeoverDocument(row)));
 
-  const selectionKey = JSON.stringify([scope, query, filter]);
+  const selectionKey = JSON.stringify([scope, query]);
   const selection = useRecordSelection(filtered.map(t => t.id), selectionKey);
   const updateStatus = async (id: string, newStatus: string) => {
     setBusyId(id);
@@ -81,35 +72,7 @@ export function TakeoversView({
         ...filtered.map(t => [t.subdomain, t.serviceProvider, t.cname, t.status, t.firstSeen, t.lastSeen]),
       ])}>Export takeovers CSV</button>
       {error && <p role="alert" className="assessment-error">{error}</p>}
-      <div className="tab-line" role="group" aria-label="Takeover status filter">
-        {["all", "open", "suppressed", "resolved"].map((s) => {
-          const count = scoped.filter((t) => s === "all" || t.status === s).length;
-          return (
-            <button
-              key={s}
-              className={filter === s ? "tab-active" : ""}
-              aria-pressed={filter === s}
-              onClick={() => setFilter(s)}
-            >
-              {s.charAt(0).toUpperCase() + s.slice(1)}
-              <span className="ml-1.5 opacity-75">{count}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="filter-bar">
-        <div className="table-search assessment-search">
-          <Search size={16} />
-          <input
-            type="search"
-            aria-label="Search takeovers"
-            placeholder="Search subdomain, CNAME, or provider…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
-      </div>
+      <QueryFilter view="takeovers" count={filtered.length} />
 
       {canDelete && mutate && <BulkDeleteToolbar key={selectionKey} selection={selection} resource="takeovers" mutate={mutate} />}
       {filtered.length === 0 ? (
@@ -117,7 +80,7 @@ export function TakeoversView({
           <ShieldCheck size={36} className="mx-auto mb-3 opacity-60 text-emerald-600" />
           <h3 className="text-base font-semibold">No Takeover Candidates</h3>
           <p className="text-sm opacity-70 mt-1 max-w-md mx-auto">
-            {query || filter !== "all"
+            {query
               ? "No records match the active filter or search query."
               : "No orphaned CNAME records pointing to unclaimed third-party cloud services were discovered."}
           </p>

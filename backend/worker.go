@@ -28,10 +28,10 @@ import (
 	"time"
 )
 
-var toolVersions = map[string]string{"subfinder": "2.17.0", "dnsx": "1.3.1", "httpx": "1.12.0", "nuclei": "3.11.1", "katana": "1.8.0", "gitleaks": "8.30.1", "naabu": "2.6.1", "tlsx": "1.4.0", "gau": "2.2.4"}
+var toolVersions = map[string]string{"subfinder": "2.17.0", "dnsx": "1.3.1", "httpx": "1.12.0", "nuclei": "3.11.1", "katana": "1.8.0", "gitleaks": "8.30.1", "naabu": "2.6.1", "tlsx": "1.4.0", "gau": "2.2.4", "retire": "6.1.0"}
 
 func scannerVersionArgs(name string) []string {
-	if name == "gitleaks" || name == "gau" {
+	if name == "gitleaks" || name == "gau" || name == "retire" {
 		return []string{"--version"}
 	}
 	return []string{"-version"}
@@ -1060,12 +1060,26 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 		}
 		manifest.Templates = kept
 	}
+	if c.Scan.TemplateSet == "v10.5.0-curated-2" {
+		kept := []templateEntry{}
+		for _, entry := range manifest.Templates {
+			if entry.File != "springboot-health.yaml" && entry.File != "springboot-mappings.yaml" {
+				kept = append(kept, entry)
+			}
+		}
+		manifest.Templates = kept
+	}
 	if cp.ServiceCoverage == nil {
 		cp.ServiceCoverage = map[string][]string{}
 	}
 	cp.Coverage = map[string][]string{}
 	for h, rules := range cp.SecretCoverage {
 		cp.Coverage[h] = append(cp.Coverage[h], rules...)
+	}
+	for source, rules := range cp.LibraryCoverage {
+		if u, e := url.Parse(source); e == nil {
+			cp.Coverage[u.Hostname()] = append(cp.Coverage[u.Hostname()], rules...)
+		}
 	}
 	for origin, rules := range cp.ServiceCoverage {
 		if u, e := url.Parse(origin); e == nil {
@@ -1259,6 +1273,12 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 						MatcherStatus *bool  `json:"matcher-status"`
 						Error         string `json:"error"`
 						Info          struct {
+							Classification struct {
+								CVEs    []string `json:"cve-id"`
+								CWEs    []string `json:"cwe-id"`
+								Score   *float64 `json:"cvss-score"`
+								Metrics string   `json:"cvss-metrics"`
+							} `json:"classification"`
 							Name        string `json:"name"`
 							Severity    string `json:"severity"`
 							Description string `json:"description"`
@@ -1294,6 +1314,10 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 							}
 						}
 						rec.finding = &Finding{
+							CVEs:        normalizedIDs(r.Info.Classification.CVEs, cvePattern),
+							CWEs:        normalizedIDs(r.Info.Classification.CWEs, cwePattern),
+							CVSSScore:   validCVSSScore(r.Info.Classification.Score),
+							CVSSMetrics: normalizedCVSSMetrics(r.Info.Classification.Metrics),
 							Template:    r.Template,
 							Host:        u.Hostname(),
 							MatchedAt:   r.Matched,
@@ -1383,7 +1407,7 @@ func (w *Worker) detect(ctx context.Context, c Claim, cp Checkpoint, proxy, dir 
 	stageErr = errors.Join(stageErr, commitErr, ctx.Err())
 	detectedCount := 0
 	for _, f := range cp.Findings {
-		if !strings.HasPrefix(f.Template, "tls-") && !strings.HasPrefix(f.Template, "gitleaks:") {
+		if !strings.HasPrefix(f.Template, "tls-") && !strings.HasPrefix(f.Template, "gitleaks:") && !strings.HasPrefix(f.Template, "retire:") {
 			detectedCount++
 		}
 	}

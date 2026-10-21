@@ -15,12 +15,13 @@ Scans operate on the selected root domain and its subdomains. Use them only for 
 | TLSx | Negotiated TLS version/cipher, certificate names, issuer, expiry, and trust/name observations |
 | GAU | Wayback/Common Crawl URL history; stored separately as unverified history with query values removed |
 | Katana | Non-headless, scoped crawl; depth 3, up to 2 requests/s per seed within the shared scan budget, 200-page profile, 90-second per-service budget; endpoint, JavaScript, form, robots, and sitemap discovery |
+| Retire.js | Static content/hash detection of vulnerable browser libraries using the same bounded JavaScript downloads; pinned local advisory snapshot, no script execution or runtime downloads; 60-second subprocess and 128 MiB V8 heap limits |
 | Gitleaks | Public JavaScript only; at most 100 files, 512 KiB/file and 16 MiB total; secrets masked and never validated |
 | Nuclei | Reviewed signed HTTP templates; technology-specific gates; no intrusive/fuzz/bruteforce/dos tags, public interactsh, or cloud upload |
 
 The [scanner downloader](../scripts/fetch-scanners.py) pins versions and validates release SHA-256 checksums. License files ship with the worker binaries. The [template manifest](../backend/templates/manifest.json) records upstream URLs, hashes, technology gates, and the pinned template release.
 
-The curated 14-template set covers selected exposed configuration, source-control files, metrics, API documentation, GraphQL consoles, and service status endpoints. It is not the full upstream CVE catalog. New templates require review, provenance, and fixture validation.
+The curated 16-template set covers selected exposed configuration, source-control files, metrics, API documentation, GraphQL consoles, and service status endpoints. It is not the full upstream CVE catalog. New templates require review, provenance, and fixture validation.
 
 ## Partial results and recovery
 
@@ -84,3 +85,15 @@ HTTP coverage counts origins that responded without blocking/server errors versu
 Before continuing a partial or failed attempt, scan detail shows the restart stage, earlier stage passes retained, downstream passes rerun, and checkpoint reuse policy. The preview and retry use the same server restart-stage logic. A continued attempt creates a new run with a link to its parent; original observations, timestamps and triage history remain. Stage timings are recorded for new execution passes. Existing JSON and PostgreSQL JSONB records load without a schema reset or migration.
 
 Scan history is paginated with URL-backed filters. Live updates reconnect with bounded backoff and use periodic snapshot refresh only while disconnected; hidden tabs suspend stream/poll activity. The workspace shows connection state and the time the last snapshot was received, independently of observation age.
+
+## Dependency findings and recorded changes
+
+Retire.js 6.1.0 uses advisory snapshot `e5e228659bbcaea7ba85536a2ef8d4fb97b366e9`. The build verifies the npm release SHA-512 integrity and snapshot SHA-256 hashes. Only its dependency-free static engine is shipped; no CLI download, dynamic function extractor, browser, or external advisory lookup is invoked. Only vulnerable identifiable libraries become findings; this is not a complete application SBOM or an exploitability assessment. Original download caps apply jointly to Gitleaks and Retire.js.
+
+A complete Retire.js report must account for every downloaded file. Missing reports, failed downloads, exhausted budgets and subprocess failures preserve unchecked library history. Dependency resolution additionally requires the original file URL and the same advisory snapshot, followed by two successful scans. A snapshot update does not silently retire findings from older advisory data; those remain unchecked until explicitly supported by a later migration/review. Older saved stage layouts remain valid: the existing JavaScript stage also performs dependency analysis when it executes again.
+
+New scans use `v10.5.0-curated-3`; resumed `curated-1` and `curated-2` runs retain their original template sets. The curated profile adds signed upstream `springboot-mappings` and `springboot-health` checks (up to two GET requests each; stop on first match). Both run generically across eligible services and omit response bodies from evidence. A detailed health exposure is informational, not proof of a vulnerable application.
+
+Findings retain scanner-supplied CVE/CWE identifiers and optional CVSS score/vector. A missing score is unavailable; zero remains a recorded zero. No CVE is inferred solely from a banner.
+
+Structured change events compare the latest earlier successful scan for the same target against the new successful scan's saved observations. DNS addresses, observed ports, per-origin technologies and certificate metadata have before/after values and scan lineage. Blocked/missing observations are not changes; technology differences describe detected sets, not confirmed uninstallations. Port comparisons require completed address batches in both scans. Empty sets remain unknown in this initial profile. Structured events are deduplicated by scan, host, origin and field and use the existing JSON/JSONB append-only event persistence.

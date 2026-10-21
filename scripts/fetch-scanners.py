@@ -37,4 +37,4 @@ for tool,version in VERSIONS.items():
         if license_data is None:raise RuntimeError(f'License missing: {tool}')
     (out/f'{tool}.LICENSE').write_bytes(license_data)
     print(f'{tool} v{version}: verified',flush=True)
-(out/'versions.json').write_text(json.dumps(VERSIONS))
+(out/'versions.json').write_text(json.dumps(VERSIONS | {"retire": "6.1.0"}))

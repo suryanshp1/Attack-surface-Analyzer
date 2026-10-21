@@ -63,35 +63,46 @@ type Asset struct {
 	Blocked      bool       `json:"blocked"`
 }
 type Finding struct {
-	ID           string   `json:"id"`
-	DeletedAt    string   `json:"deletedAt,omitempty"`
-	Title        string   `json:"title"`
-	Severity     string   `json:"severity"`
-	Host         string   `json:"host"`
-	Status       string   `json:"status"`
-	Template     string   `json:"template"`
-	FirstSeen    string   `json:"firstSeen"`
-	LastSeen     string   `json:"lastSeen"`
-	Description  string   `json:"description"`
-	Remediation  string   `json:"remediation"`
-	Evidence     string   `json:"evidence"`
-	Notes        []Note   `json:"notes"`
-	MatchedAt    string   `json:"matchedAt"`
-	TargetID     string   `json:"targetId"`
-	EvidenceKey  string   `json:"evidenceKey"`
-	MissingScans int      `json:"missingScans"`
-	Category     string   `json:"category,omitempty"`
-	Port         int      `json:"port,omitempty"`
-	Protocol     string   `json:"protocol,omitempty"`
-	Method       string   `json:"method,omitempty"`
-	Parameters   []string `json:"parameters,omitempty"`
-	StageName    string   `json:"stageName,omitempty"`
-	Tool         string   `json:"tool,omitempty"`
-	Technologies []string `json:"technologies,omitempty"`
-	IP           string   `json:"ip,omitempty"`
-	ScanID       string   `json:"scanId,omitempty"`
-	StepLog      string   `json:"stepLog,omitempty"`
-	StepSuccess  bool     `json:"stepSuccess,omitempty"`
+	CVEs         []string               `json:"cves,omitempty"`
+	CWEs         []string               `json:"cwes,omitempty"`
+	CVSSScore    *float64               `json:"cvssScore,omitempty"`
+	CVSSMetrics  string                 `json:"cvssMetrics,omitempty"`
+	Dependency   *DependencyObservation `json:"dependency,omitempty"`
+	ID           string                 `json:"id"`
+	DeletedAt    string                 `json:"deletedAt,omitempty"`
+	Title        string                 `json:"title"`
+	Severity     string                 `json:"severity"`
+	Host         string                 `json:"host"`
+	Status       string                 `json:"status"`
+	Template     string                 `json:"template"`
+	FirstSeen    string                 `json:"firstSeen"`
+	LastSeen     string                 `json:"lastSeen"`
+	Description  string                 `json:"description"`
+	Remediation  string                 `json:"remediation"`
+	Evidence     string                 `json:"evidence"`
+	Notes        []Note                 `json:"notes"`
+	MatchedAt    string                 `json:"matchedAt"`
+	TargetID     string                 `json:"targetId"`
+	EvidenceKey  string                 `json:"evidenceKey"`
+	MissingScans int                    `json:"missingScans"`
+	Category     string                 `json:"category,omitempty"`
+	Port         int                    `json:"port,omitempty"`
+	Protocol     string                 `json:"protocol,omitempty"`
+	Method       string                 `json:"method,omitempty"`
+	Parameters   []string               `json:"parameters,omitempty"`
+	StageName    string                 `json:"stageName,omitempty"`
+	Tool         string                 `json:"tool,omitempty"`
+	Technologies []string               `json:"technologies,omitempty"`
+	IP           string                 `json:"ip,omitempty"`
+	ScanID       string                 `json:"scanId,omitempty"`
+	StepLog      string                 `json:"stepLog,omitempty"`
+	StepSuccess  bool                   `json:"stepSuccess,omitempty"`
+}
+type DependencyObservation struct {
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Detection string `json:"detection"`
+	Database  string `json:"database"`
 }
 type Note struct {
 	Text  string `json:"text"`
@@ -164,12 +175,13 @@ type Scan struct {
 	TemplateSet   string            `json:"templateSet"`
 }
 type Event struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"`
-	Title  string `json:"title"`
-	Detail string `json:"detail"`
-	At     string `json:"at"`
-	Actor  string `json:"actor"`
+	Change *SurfaceChange `json:"change,omitempty"`
+	ID     string         `json:"id"`
+	Kind   string         `json:"kind"`
+	Title  string         `json:"title"`
+	Detail string         `json:"detail"`
+	At     string         `json:"at"`
+	Actor  string         `json:"actor"`
 }
 type Settings struct {
 	Name        string `json:"name"`
@@ -296,7 +308,7 @@ func (s *Server) audit(action, detail string) {
 	s.auditActor(action, detail, actor)
 }
 func (s *Server) auditActor(action, detail, actor string) {
-	s.state.Audit = append([]Event{{id(), "audit", action, detail, now(), actor}}, s.state.Audit...)
+	s.state.Audit = append([]Event{{ID: id(), Kind: "audit", Title: action, Detail: detail, At: now(), Actor: actor}}, s.state.Audit...)
 }
 func (s *Server) save() error {
 	if s.db != nil {
@@ -737,7 +749,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			retry.Stages[i].Status = "pending"
 		}
 		if firstPending < len(retry.Stages) && (retry.Stages[firstPending].Name == "Discovery" || retry.Stages[firstPending].Name == "DNS resolution") {
-			retry.Checkpoint = Checkpoint{Known: retry.Checkpoint.Known, KnownSecrets: retry.Checkpoint.KnownSecrets, Hosts: retry.Checkpoint.Hosts, IncompleteStages: retry.Checkpoint.IncompleteStages}
+			retry.Checkpoint = Checkpoint{Known: retry.Checkpoint.Known, KnownSecrets: retry.Checkpoint.KnownSecrets, KnownLibraries: retry.Checkpoint.KnownLibraries, Hosts: retry.Checkpoint.Hosts, IncompleteStages: retry.Checkpoint.IncompleteStages}
 		}
 		if firstPending < len(retry.Stages) && (retry.Stages[firstPending].Name == "Port discovery" || retry.Stages[firstPending].Name == "HTTP probing") {
 			retry.Checkpoint = resumeNetworkCheckpoint(retry.Checkpoint)
@@ -993,8 +1005,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	respond(w, status, result)
 }
 func newScan(t Target, trigger string, rate int) Scan {
-	sc := Scan{ToolVersions: toolVersions, TemplateSet: "v10.5.0-curated-2", ID: id(), TargetID: t.ID, Domain: t.Domain, Status: "queued", Trigger: trigger, StartedAt: now(), Rate: rate, Concurrency: 5}
-	tools := []string{"subfinder", "dnsx", "naabu", "httpx", "tlsx", "Go TLS", "gau", "katana", "gitleaks", "nuclei", "Surfacer", "Surfacer"}
+	sc := Scan{ToolVersions: toolVersions, TemplateSet: "v10.5.0-curated-3", ID: id(), TargetID: t.ID, Domain: t.Domain, Status: "queued", Trigger: trigger, StartedAt: now(), Rate: rate, Concurrency: 5}
+	tools := []string{"subfinder", "dnsx", "naabu", "httpx", "tlsx", "Go TLS", "gau", "katana", "gitleaks + retire", "nuclei", "Surfacer", "Surfacer"}
 	names := []string{"Discovery", "DNS resolution", "Port discovery", "HTTP probing", "TLS assessment", "TLS inspection", "Historical discovery", "Endpoint crawling", "JavaScript secrets", "Detection", "Normalization", "Change detection"}
 	for i, name := range names {
 		tool := tools[i]

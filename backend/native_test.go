@@ -52,7 +52,13 @@ func TestNativeScannerPipeline(t *testing.T) {
 			fmt.Fprint(w, `<html><title>Owned scanner fixture</title><a href="/api/users?token=never-store-this-value">Users</a><script src="/app.js"></script><form method="post" action="/save"><input name="email"></form></html>`)
 		case "/app.js":
 			w.Header().Set("Content-Type", "application/javascript")
-			fmt.Fprint(w, `const github_token = "ghp_K9mVr2dPf7QsXa4Tc8NhY6Wb3JzRu5Ee0Lk1"; fetch('/api/users');`)
+			fmt.Fprint(w, `/*! jQuery v1.12.4 */ const github_token = "ghp_K9mVr2dPf7QsXa4Tc8NhY6Wb3JzRu5Ee0Lk1"; fetch('/api/users');`)
+		case "/actuator/mappings":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"mappings":[{"method":"GET","produces":"application/json"}]}`)
+		case "/actuator/health":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"status":"UP","components":{"diskSpace":{"status":"UP"}}}`)
 		case "/api/users":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"users":[]}`)
@@ -193,13 +199,34 @@ func TestNativeScannerPipeline(t *testing.T) {
 		t.Fatal("Katana did not produce persistent endpoint inventory")
 	}
 	secretFound := false
+	dependencyFound := false
 	for _, f := range s.state.Findings {
+		if f.Tool == "retire" && f.Dependency != nil && f.Dependency.Name == "jquery" && contains(f.CVEs, "CVE-2020-11022") {
+			dependencyFound = true
+		}
 		if strings.HasPrefix(f.Template, "gitleaks:") {
 			secretFound = true
 		}
 		if strings.Contains(f.Evidence, "ghp_K9mVr2dPf7QsXa4Tc8NhY6Wb3JzRu5Ee0Lk1") {
 			t.Fatal("public JS credential leaked into evidence")
 		}
+	}
+	for _, template := range []string{"springboot-mappings", "springboot-health"} {
+		matched := false
+		for _, f := range s.state.Findings {
+			if f.Template == template {
+				matched = true
+				if !strings.Contains(f.Evidence, "Sensitive response body omitted") {
+					t.Fatal("sensitive actuator evidence persisted")
+				}
+			}
+		}
+		if !matched {
+			t.Fatalf("native template %s did not match fixture", template)
+		}
+	}
+	if !dependencyFound {
+		t.Fatal("Retire.js did not detect the offline vulnerable library fixture")
 	}
 	if !secretFound {
 		t.Fatal("Gitleaks did not detect the public JS fixture credential")

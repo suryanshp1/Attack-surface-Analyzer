@@ -46,6 +46,13 @@ func TestStorageIntegration(t *testing.T) {
 	s.state.Members = []Member{{ID: "fixture-member", Name: "Integration viewer", Role: "viewer", Enabled: true}}
 	s.state.AccessKeys = []AccessKey{{ID: "fixture-key", UserID: "fixture-member", Name: "Integration", Hash: tokenDigest("fixture-only"), ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}}
 	sc.Checkpoint.Assets[0].Services = []Service{{URL: "https://storage-fixture.example", Port: 443, Status: 200, TLSVersion: "tls13"}}
+	score := 0.0
+	sc.Checkpoint.Findings[0].CVEs = []string{"CVE-2020-11022"}
+	sc.Checkpoint.Findings[0].CVSSScore = &score
+	sc.Checkpoint.Findings[0].Dependency = &DependencyObservation{Name: "jquery", Version: "1.12.4", Detection: "filecontent", Database: retireDatabase}
+	sc.Checkpoint.KnownLibraries = []Finding{libraryFinding("https://storage-fixture.example/app.js")}
+	sc.Checkpoint.LibraryCoverage = map[string][]string{"https://storage-fixture.example/app.js": {"retire:jquery:fixture"}}
+	s.state.Events = []Event{{ID: "storage-change", Kind: "certificate", Title: "Certificate expiry changed", Change: &SurfaceChange{TargetID: "storage-target", ScanID: sc.ID, PreviousScanID: "prior-storage-attempt", Host: "storage-fixture.example", Field: "certificateExpiry", Before: []string{"2026-01-01"}, After: []string{"2026-06-01"}}}}
 	s.normalize(&sc, true)
 	s.state.Scans = []Scan{sc}
 	s.audit("Storage fixture verified", "Owned integration-test database")
@@ -85,6 +92,21 @@ func TestStorageIntegration(t *testing.T) {
 		t.Fatal("scan lineage, timings or service outcomes did not persist")
 	}
 	finding := reloaded.state.Findings[0]
+	if finding.Dependency == nil || finding.Dependency.Database != retireDatabase || finding.CVSSScore == nil || *finding.CVSSScore != 0 || !contains(finding.CVEs, "CVE-2020-11022") {
+		t.Fatal("vulnerability metadata did not persist")
+	}
+	if len(storedScan.Checkpoint.KnownLibraries) != 1 || len(storedScan.Checkpoint.LibraryCoverage) != 1 {
+		t.Fatal("library coverage did not persist")
+	}
+	changeFound := false
+	for _, e := range reloaded.state.Events {
+		if e.ID == "storage-change" && e.Change != nil && e.Change.PreviousScanID == "prior-storage-attempt" {
+			changeFound = true
+		}
+	}
+	if !changeFound {
+		t.Fatal("structured changes did not persist")
+	}
 	if finding.EvidenceKey == "" {
 		t.Fatal("S3 evidence reference missing")
 	}

@@ -336,7 +336,7 @@ func serviceOrigin(raw string) string {
 }
 
 func resumeNetworkCheckpoint(old Checkpoint) Checkpoint {
-	cp := Checkpoint{Hosts: old.Hosts, DNS: old.DNS, PortResults: old.PortResults, KnownSecrets: old.KnownSecrets, IncompleteStages: old.IncompleteStages, Takeovers: old.Takeovers, DNSPosture: old.DNSPosture}
+	cp := Checkpoint{Hosts: old.Hosts, DNS: old.DNS, PortResults: old.PortResults, KnownSecrets: old.KnownSecrets, KnownLibraries: old.KnownLibraries, IncompleteStages: old.IncompleteStages, Takeovers: old.Takeovers, DNSPosture: old.DNSPosture}
 	for _, a := range old.Assets {
 		fresh := Asset{Host: a.Host, Type: "Domain", IP: a.IP, Source: a.Source, Ports: a.Ports, Technologies: []string{}}
 		for _, ip := range old.DNS[a.Host] {

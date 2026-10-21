@@ -15,7 +15,7 @@ Self-hosted external attack surface monitoring for domains you manage. Discover 
 - **Live finding visibility:** findings publish into the workspace as each stage and detection batch commits, with consolidated stage logs.
 - **Coverage-aware history:** incomplete checks retain prior findings, endpoints, and takeover candidates instead of treating missing results as resolved (two clean completed scans required for resolution).
 - **Self-hosted storage:** PostgreSQL for workspace state and MinIO for evidence, with an isolated worker network and scoped egress gateway.
-- **Responsive workspace:** light, dark, and system appearance; mobile layouts; shareable view state through URL filters.
+- **Responsive workspace:** light, dark, and system appearance; mobile layouts; shareable view state through URL filters. A first-visit guided tour introduces the main views; replay it from the top-bar compass or Help & documentation. Tour dismissal is saved in this browser, and closing the tour restores your original view and filters.
 - **AI client access:** ten authenticated [MCP tools](docs/mcp.md) for filtered inventory, findings, scan status, start/resume/cancel controls, and member-attributed triage.
 
 Surfacer is under active development. The current deployment supports one workspace and one API process, with scalable workers. See [current limits](#current-limits) before planning a deployment.
@@ -132,13 +132,16 @@ Only the web service publishes a host port, bound to loopback by default. The wo
 | Historical URL discovery | GAU | 2.2.4 |
 | Endpoint crawling | Katana | 1.8.0 |
 | Public JavaScript secret detection | Gitleaks | 8.30.1 |
+| Offline vulnerable browser-library detection | Retire.js static engine | 6.1.0 |
 | Curated exposure checks | Nuclei | 3.11.1 |
 
-Scanner versions and checksum verification live in [the downloader](scripts/fetch-scanners.py). Nuclei runs a reviewed set of 14 signed templates pinned to `nuclei-templates v10.5.0`; it does not run the entire upstream catalog. See [scanning and coverage](docs/scanning.md) for scope, budgets, lifecycle rules, and recovery behavior.
+Scanner versions and checksum verification live in [the downloader](scripts/fetch-scanners.py) and [the offline Retire.js downloader](scripts/fetch-retire.py). Nuclei runs a reviewed set of 16 signed templates pinned to `nuclei-templates v10.5.0`; it does not run the entire upstream catalog. See [scanning and coverage](docs/scanning.md) for scope, budgets, lifecycle rules, and recovery behavior.
 
 Scanners use bounded worker pools and shared gateway pacing. Egress plain HTTP requests and HTTPS tunnels are paced dynamically by the scan's signed permit rate and concurrency, while the gateway DNS relay forwards A, AAAA, TXT, CNAME, and MX queries. Nuclei groups curated templates by matching technology, runs up to three parallel worker subprocesses on batches of up to 50 URLs, streams scanner JSONL line by line, and skips dead hosts (`-mhe 5`) before exhausting budgets. Findings publish progressively as each stage or batch checkpoint commits.
 
 Incomplete stages and failed or skipped JavaScript downloads cannot establish clean coverage. Findings, removed assets, endpoints, and subdomain takeovers strictly require two consecutive clean, successful scans confirming absence before resolution. Use **Scan activity → Resume scan** to continue a failed or partial assessment from its earliest unfinished stage; reusable checkpoints survive, and the original run remains in history. Stage progress describes pipeline execution, not the percentage of assets assessed.
+
+Retire.js reuses the bounded public JavaScript downloads with an immutable advisory snapshot; it does not execute scripts or fetch advisories during scans. Findings retain supplied CVE/CWE/CVSS metadata and dependency provenance. The Changes view shows recorded DNS, port, technology, and certificate differences between comparable successful scans. Missing observations remain unknown. See [the expansion plan](docs/asm-expansion-plan.md) for follow-up work.
 
 ## MCP access
 
